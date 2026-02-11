@@ -1,3 +1,7 @@
+# Compiled output
+/target/
+**/target/
+
 # Node / TS
 node_modules/
 dist/
@@ -12,3 +16,9 @@ build/
 
 # macOS
 .DS_Store
+
+# Codex conversations
+conversations/
+
+# Rustfmt backup files
+**/*.rs.bk
