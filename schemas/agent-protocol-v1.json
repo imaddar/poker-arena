@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://poker-arena.local/schemas/agent-protocol-v1.json",
+  "title": "Agent Protocol V1",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "hand_id",
+    "table_id",
+    "seat",
+    "hole_cards",
+    "board",
+    "pot",
+    "to_call",
+    "stacks",
+    "bets",
+    "legal_actions",
+    "action_deadline_ms"
+  ],
+  "properties": {
+    "protocol_version": { "type": "integer", "const": 1 },
+    "hand_id": { "type": "string" },
+    "table_id": { "type": "string" },
+    "seat": { "type": "integer", "minimum": 1, "maximum": 6 },
+    "hole_cards": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "board": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 5
+    },
+    "pot": { "type": "integer", "minimum": 0 },
+    "to_call": { "type": "integer", "minimum": 0 },
+    "min_raise_to": { "type": ["integer", "null"], "minimum": 0 },
+    "stacks": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "bets": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "legal_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["fold", "check", "call", "bet", "raise"]
+      },
+      "minItems": 1
+    },
+    "action_deadline_ms": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,14 @@
+# Node / TS
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
+
+# Env
+.env
+.env.*
+
+# macOS
+.DS_Store
