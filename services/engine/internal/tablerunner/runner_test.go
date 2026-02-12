@@ -159,6 +159,183 @@ func TestRunHand_PropagatesStartNewHandValidationError(t *testing.T) {
 	}
 }
 
+func TestRunTable_CompletesRequestedHands(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(newScriptedProvider(), RunnerConfig{})
+
+	result, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   3,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	if result.HandsCompleted != 3 {
+		t.Fatalf("expected 3 hands completed, got %d", result.HandsCompleted)
+	}
+	if len(result.HandSummaries) != 3 {
+		t.Fatalf("expected 3 hand summaries, got %d", len(result.HandSummaries))
+	}
+}
+
+func TestRunTable_RotatesButtonAcrossHands(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(newScriptedProvider(), RunnerConfig{})
+
+	result, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   3,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2, 3),
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	if result.FinalButton != mustSeatNo(t, cfg, 1) {
+		t.Fatalf("expected final button seat 1, got %d", result.FinalButton)
+	}
+}
+
+func TestRunTable_CarriesForwardSeatStacks(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(newScriptedProvider(), RunnerConfig{})
+
+	initialSeats := activeSeats(t, cfg, 1, 2)
+	initialStacks := map[domain.SeatNo]uint32{
+		initialSeats[0].SeatNo: initialSeats[0].Stack,
+		initialSeats[1].SeatNo: initialSeats[1].Stack,
+	}
+
+	result, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   2,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        initialSeats,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	changed := false
+	for _, summary := range result.HandSummaries {
+		for _, seat := range summary.FinalState.Seats {
+			if seat.Stack != initialStacks[seat.SeatNo] {
+				changed = true
+				break
+			}
+		}
+		if changed {
+			break
+		}
+	}
+	if !changed {
+		t.Fatal("expected seat stacks to change during table run")
+	}
+}
+
+func TestRunTable_StopsWhenTooFewActiveSeats(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	seats := activeSeats(t, cfg, 1, 2)
+	seats[0].Stack = 50
+
+	runner := New(newScriptedProvider(), RunnerConfig{})
+	_, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   2,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        seats,
+		Config:       cfg,
+	})
+	if !errors.Is(err, ErrInsufficientActiveSeats) {
+		t.Fatalf("expected ErrInsufficientActiveSeats, got %v", err)
+	}
+}
+
+func TestRunTable_RejectsInvalidHandsToRun(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(newScriptedProvider(), RunnerConfig{})
+	_, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   0,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if !errors.Is(err, ErrInvalidHandsToRun) {
+		t.Fatalf("expected ErrInvalidHandsToRun, got %v", err)
+	}
+}
+
+func TestRunTable_RespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(newScriptedProvider(), RunnerConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runner.RunTable(ctx, RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   2,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if !errors.Is(err, ErrContextCancelled) {
+		t.Fatalf("expected ErrContextCancelled, got %v", err)
+	}
+}
+
+func TestRunTable_PreservesChipConservationAcrossHands(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(newScriptedProvider(), RunnerConfig{})
+
+	result, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   3,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	total := cfg.StartingStack * 2
+	for i, summary := range result.HandSummaries {
+		got := chipTotal(summary.FinalState)
+		if got != total {
+			t.Fatalf("hand %d chip conservation failed: want %d got %d", i+1, total, got)
+		}
+	}
+}
+
 type scriptedProvider struct {
 	steps []scriptedStep
 	i     int
