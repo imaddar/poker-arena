@@ -124,6 +124,7 @@ const (
 type SeatState struct {
 	SeatNo            SeatNo     `json:"seat_no"`
 	Stack             uint32     `json:"stack"`
+	TotalCommitted    uint32     `json:"total_committed"`
 	CommittedInRound  uint32     `json:"committed_in_round"`
 	Folded            bool       `json:"folded"`
 	HasActedThisRound bool       `json:"has_acted_this_round"`
@@ -134,6 +135,7 @@ func NewSeatState(seatNo SeatNo, stack uint32) SeatState {
 	return SeatState{
 		SeatNo:            seatNo,
 		Stack:             stack,
+		TotalCommitted:    0,
 		CommittedInRound:  0,
 		Folded:            false,
 		HasActedThisRound: false,
@@ -207,7 +209,22 @@ type HandState struct {
 	MinRaiseTo           uint32      `json:"min_raise_to"`
 	LastFullRaise        uint32      `json:"last_full_raise"`
 	Board                []Card      `json:"board"`
+	Deck                 []Card      `json:"deck"`
+	NextCardIndex        int         `json:"next_card_index"`
+	HoleCards            []SeatCards `json:"hole_cards"`
+	ShowdownAwards       []PotAward  `json:"showdown_awards"`
 	Seats                []SeatState `json:"seats"`
+}
+
+type SeatCards struct {
+	SeatNo SeatNo `json:"seat_no"`
+	Cards  []Card `json:"cards"`
+}
+
+type PotAward struct {
+	Amount uint32   `json:"amount"`
+	Seats  []SeatNo `json:"seats"`
+	Reason string   `json:"reason"`
 }
 
 func NewHandState(
@@ -272,6 +289,10 @@ func NewHandState(
 		MinRaiseTo:           config.BigBlind,
 		LastFullRaise:        0,
 		Board:                make([]Card, 0, 5),
+		Deck:                 make([]Card, 0, 52),
+		NextCardIndex:        0,
+		HoleCards:            make([]SeatCards, 0, len(seats)),
+		ShowdownAwards:       make([]PotAward, 0, 4),
 		Seats:                append([]SeatState(nil), seats...),
 	}, nil
 }

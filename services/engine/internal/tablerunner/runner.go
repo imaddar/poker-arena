@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/imaddar/poker-arena/services/engine/internal/domain"
+	"github.com/imaddar/poker-arena/services/engine/internal/rules"
 	"github.com/imaddar/poker-arena/services/engine/internal/statemachine"
 )
 
@@ -33,6 +34,7 @@ type RunHandInput struct {
 
 type RunnerConfig struct {
 	MaxActionsPerHand int
+	OnHandComplete    func(HandSummary)
 }
 
 type Runner struct {
@@ -140,9 +142,11 @@ func (r Runner) RunTable(ctx context.Context, input RunTableInput) (RunTableResu
 			FallbackCount: handResult.FallbackCount,
 			FinalState:    cloneHandState(handResult.FinalState),
 		})
+		if r.config.OnHandComplete != nil {
+			r.config.OnHandComplete(result.HandSummaries[len(result.HandSummaries)-1])
+		}
 
-		resolved := settleUnallocatedPot(cloneHandState(handResult.FinalState))
-		seats = prepareSeatsForNextHand(resolved.Seats)
+		seats = prepareSeatsForNextHand(handResult.FinalState.Seats)
 		nextButton, err := nextButtonSeat(currentButton, seats)
 		if err != nil {
 			result.FinalButton = currentButton
@@ -183,6 +187,14 @@ func (r Runner) RunHand(ctx context.Context, input RunHandInput) (RunHandResult,
 
 	for {
 		if isTerminal(state) {
+			if state.Phase == domain.HandPhaseShowdown {
+				resolved, _, err := rules.ResolvePots(state)
+				if err != nil {
+					result.FinalState = state
+					return result, err
+				}
+				state = resolved
+			}
 			result.FinalState = state
 			return result, nil
 		}
@@ -295,6 +307,7 @@ func isTerminal(state domain.HandState) bool {
 func prepareSeatsForNextHand(seats []domain.SeatState) []domain.SeatState {
 	prepared := cloneSeats(seats)
 	for i := range prepared {
+		prepared[i].TotalCommitted = 0
 		prepared[i].CommittedInRound = 0
 		prepared[i].HasActedThisRound = false
 		prepared[i].Folded = false
@@ -369,48 +382,27 @@ func cloneHandState(state domain.HandState) domain.HandState {
 	cloned := state
 	cloned.Seats = cloneSeats(state.Seats)
 	cloned.Board = append([]domain.Card(nil), state.Board...)
+	cloned.Deck = append([]domain.Card(nil), state.Deck...)
+	cloned.HoleCards = make([]domain.SeatCards, 0, len(state.HoleCards))
+	for _, seatCards := range state.HoleCards {
+		cloned.HoleCards = append(cloned.HoleCards, domain.SeatCards{
+			SeatNo: seatCards.SeatNo,
+			Cards:  append([]domain.Card(nil), seatCards.Cards...),
+		})
+	}
+	cloned.ShowdownAwards = make([]domain.PotAward, 0, len(state.ShowdownAwards))
+	for _, award := range state.ShowdownAwards {
+		cloned.ShowdownAwards = append(cloned.ShowdownAwards, domain.PotAward{
+			Amount: award.Amount,
+			Seats:  append([]domain.SeatNo(nil), award.Seats...),
+			Reason: award.Reason,
+		})
+	}
 	if state.LastAggressorSeat != nil {
 		seat := *state.LastAggressorSeat
 		cloned.LastAggressorSeat = &seat
 	}
 	return cloned
-}
-
-func settleUnallocatedPot(state domain.HandState) domain.HandState {
-	if state.Pot == 0 {
-		return state
-	}
-
-	recipient := -1
-	activeNonFolded := 0
-	for i, seat := range state.Seats {
-		if seat.Status == domain.SeatStatusActive && !seat.Folded {
-			activeNonFolded++
-			if recipient == -1 || seat.SeatNo < state.Seats[recipient].SeatNo {
-				recipient = i
-			}
-		}
-	}
-
-	// If winner is not explicit in state yet, fall back to deterministic lowest seat.
-	if recipient == -1 || activeNonFolded != 1 {
-		recipient = -1
-		for i, seat := range state.Seats {
-			if seat.Status != domain.SeatStatusBusted && seat.Stack > 0 {
-				if recipient == -1 || seat.SeatNo < state.Seats[recipient].SeatNo {
-					recipient = i
-				}
-			}
-		}
-	}
-
-	if recipient == -1 {
-		return state
-	}
-
-	state.Seats[recipient].Stack += state.Pot
-	state.Pot = 0
-	return state
 }
 
 func sortSeatsBySeatNo(seats []domain.SeatState) {

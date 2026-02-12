@@ -36,8 +36,11 @@ func TestRunHand_CompletesWithScriptedActions(t *testing.T) {
 		t.Fatalf("RunHand failed: %v", err)
 	}
 
-	if result.FinalState.Phase != domain.HandPhaseShowdown && result.FinalState.Phase != domain.HandPhaseComplete {
-		t.Fatalf("expected terminal phase, got %q", result.FinalState.Phase)
+	if result.FinalState.Phase != domain.HandPhaseComplete {
+		t.Fatalf("expected phase %q, got %q", domain.HandPhaseComplete, result.FinalState.Phase)
+	}
+	if result.FinalState.Pot != 0 {
+		t.Fatalf("expected pot to be fully settled, got %d", result.FinalState.Pot)
 	}
 	if result.ActionCount == 0 {
 		t.Fatal("expected action count > 0")
@@ -182,6 +185,40 @@ func TestRunTable_CompletesRequestedHands(t *testing.T) {
 	}
 	if len(result.HandSummaries) != 3 {
 		t.Fatalf("expected 3 hand summaries, got %d", len(result.HandSummaries))
+	}
+}
+
+func TestRunTable_InvokesOnHandCompleteCallback(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	var completed []uint64
+	runner := New(newScriptedProvider(), RunnerConfig{
+		OnHandComplete: func(summary HandSummary) {
+			completed = append(completed, summary.HandNo)
+		},
+	})
+
+	_, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   3,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	if len(completed) != 3 {
+		t.Fatalf("expected callback for 3 hands, got %d", len(completed))
+	}
+	for i, handNo := range completed {
+		want := uint64(i + 1)
+		if handNo != want {
+			t.Fatalf("callback hand index %d: want %d got %d", i, want, handNo)
+		}
 	}
 }
 
@@ -386,6 +423,13 @@ func TestRunTable_OneHundredHandsPreserveChipConservation(t *testing.T) {
 		if got != initialTotal {
 			t.Fatalf("hand %d chip conservation failed: want %d got %d", i+1, initialTotal, got)
 		}
+		if summary.FinalState.Pot != 0 {
+			t.Fatalf("hand %d expected settled pot 0, got %d", i+1, summary.FinalState.Pot)
+		}
+		if len(summary.FinalState.ShowdownAwards) == 0 {
+			t.Fatalf("hand %d expected showdown awards to be recorded", i+1)
+		}
+		assertUniqueCards(t, summary.FinalState)
 	}
 
 	final := uint32(0)
@@ -494,4 +538,30 @@ func chipTotal(state domain.HandState) uint32 {
 		total += seat.Stack
 	}
 	return total
+}
+
+func assertUniqueCards(t *testing.T, state domain.HandState) {
+	t.Helper()
+
+	seen := map[string]struct{}{}
+	for _, card := range state.Board {
+		key := cardSignature(card)
+		if _, ok := seen[key]; ok {
+			t.Fatalf("duplicate board card %s", key)
+		}
+		seen[key] = struct{}{}
+	}
+	for _, seatCards := range state.HoleCards {
+		for _, card := range seatCards.Cards {
+			key := cardSignature(card)
+			if _, ok := seen[key]; ok {
+				t.Fatalf("duplicate hole/board card %s", key)
+			}
+			seen[key] = struct{}{}
+		}
+	}
+}
+
+func cardSignature(card domain.Card) string {
+	return string(card.Suit) + "-" + string(rune(card.Rank))
 }

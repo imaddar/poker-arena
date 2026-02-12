@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/imaddar/poker-arena/services/engine/internal/domain"
+	"github.com/imaddar/poker-arena/services/engine/internal/rules"
 )
 
 func TestStartNewHandInitializesPreflopAndBlinds(t *testing.T) {
@@ -48,6 +49,114 @@ func TestStartNewHandInitializesPreflopAndBlinds(t *testing.T) {
 	if state.ActingSeat != utg {
 		t.Fatalf("expected acting seat %d, got %d", utg, state.ActingSeat)
 	}
+	if len(state.HoleCards) != 4 {
+		t.Fatalf("expected hole cards for 4 seats, got %d", len(state.HoleCards))
+	}
+}
+
+func TestStartNewHandDealsTwoCardsPerActiveSeatWithNoDuplicates(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	state, err := StartNewHand(StartNewHandInput{
+		TableID:    "table-1",
+		HandNo:     1,
+		Seats:      mustSeats(t, cfg, 1, 2, 3, 4),
+		ButtonSeat: mustSeatNo(t, cfg, 1),
+		Config:     cfg,
+		Shuffler:   rules.NewSeededShuffler(23),
+	})
+	if err != nil {
+		t.Fatalf("StartNewHand failed: %v", err)
+	}
+
+	if len(state.Board) != 0 {
+		t.Fatalf("expected empty board preflop, got %d", len(state.Board))
+	}
+	if len(state.HoleCards) != 4 {
+		t.Fatalf("expected 4 hole card entries, got %d", len(state.HoleCards))
+	}
+
+	seen := map[string]struct{}{}
+	for _, seatCards := range state.HoleCards {
+		if len(seatCards.Cards) != 2 {
+			t.Fatalf("seat %d expected 2 hole cards, got %d", seatCards.SeatNo, len(seatCards.Cards))
+		}
+		for _, card := range seatCards.Cards {
+			key := cardIdentity(card)
+			if _, ok := seen[key]; ok {
+				t.Fatalf("duplicate dealt card %s", key)
+			}
+			seen[key] = struct{}{}
+		}
+	}
+}
+
+func TestApplyActionDealsBoardUsingBurnSequence(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	state, err := StartNewHand(StartNewHandInput{
+		TableID:    "table-1",
+		HandNo:     1,
+		Seats:      mustSeats(t, cfg, 1, 2),
+		ButtonSeat: mustSeatNo(t, cfg, 1),
+		Config:     cfg,
+		Shuffler:   noShuffleShuffler{},
+	})
+	if err != nil {
+		t.Fatalf("StartNewHand failed: %v", err)
+	}
+
+	call := mustAction(t, domain.ActionCall, nil)
+	check := mustAction(t, domain.ActionCheck, nil)
+
+	state, err = ApplyAction(state, call) // closes preflop -> flop dealt
+	if err != nil {
+		t.Fatalf("preflop call failed: %v", err)
+	}
+	if state.Street == domain.StreetPreflop {
+		state, err = ApplyAction(state, check)
+		if err != nil {
+			t.Fatalf("preflop check failed: %v", err)
+		}
+	}
+	assertBoard(t, state.Board, []domain.Card{
+		mustCard(t, 7, domain.SuitClubs),
+		mustCard(t, 8, domain.SuitClubs),
+		mustCard(t, 9, domain.SuitClubs),
+	})
+
+	state, err = ApplyAction(state, check)
+	if err != nil {
+		t.Fatalf("flop check 1 failed: %v", err)
+	}
+	state, err = ApplyAction(state, check) // closes flop -> turn dealt
+	if err != nil {
+		t.Fatalf("flop check 2 failed: %v", err)
+	}
+	assertBoard(t, state.Board, []domain.Card{
+		mustCard(t, 7, domain.SuitClubs),
+		mustCard(t, 8, domain.SuitClubs),
+		mustCard(t, 9, domain.SuitClubs),
+		mustCard(t, 11, domain.SuitClubs),
+	})
+
+	state, err = ApplyAction(state, check)
+	if err != nil {
+		t.Fatalf("turn check 1 failed: %v", err)
+	}
+	state, err = ApplyAction(state, check) // closes turn -> river dealt
+	if err != nil {
+		t.Fatalf("turn check 2 failed: %v", err)
+	}
+	assertBoard(t, state.Board, []domain.Card{
+		mustCard(t, 7, domain.SuitClubs),
+		mustCard(t, 8, domain.SuitClubs),
+		mustCard(t, 9, domain.SuitClubs),
+		mustCard(t, 11, domain.SuitClubs),
+		mustCard(t, 13, domain.SuitClubs),
+	})
 }
 
 func TestStartNewHandHandlesShortStackBlindPosting(t *testing.T) {
@@ -335,6 +444,37 @@ func chipTotal(state domain.HandState) uint32 {
 		total += seat.Stack
 	}
 	return total
+}
+
+type noShuffleShuffler struct{}
+
+func (noShuffleShuffler) Shuffle(_ []domain.Card) error {
+	return nil
+}
+
+func cardIdentity(card domain.Card) string {
+	return string(card.Suit) + "-" + string(rune(card.Rank))
+}
+
+func mustCard(t *testing.T, rank uint8, suit domain.Suit) domain.Card {
+	t.Helper()
+	r, err := domain.NewRank(rank)
+	if err != nil {
+		t.Fatalf("NewRank failed: %v", err)
+	}
+	return domain.NewCard(r, suit)
+}
+
+func assertBoard(t *testing.T, board []domain.Card, want []domain.Card) {
+	t.Helper()
+	if len(board) != len(want) {
+		t.Fatalf("expected board length %d, got %d", len(want), len(board))
+	}
+	for i := range want {
+		if board[i] != want[i] {
+			t.Fatalf("board[%d] mismatch: want %+v got %+v", i, want[i], board[i])
+		}
+	}
 }
 
 func boardSizeForStreet(street domain.Street) int {

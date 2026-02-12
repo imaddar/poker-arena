@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/imaddar/poker-arena/services/engine/internal/domain"
+	"github.com/imaddar/poker-arena/services/engine/internal/rules"
 )
 
 var (
@@ -23,6 +24,7 @@ type StartNewHandInput struct {
 	Seats      []domain.SeatState
 	ButtonSeat domain.SeatNo
 	Config     domain.TableConfig
+	Shuffler   rules.Shuffler
 }
 
 func StartNewHand(input StartNewHandInput) (domain.HandState, error) {
@@ -59,6 +61,16 @@ func StartNewHand(input StartNewHandInput) (domain.HandState, error) {
 		return domain.HandState{}, err
 	}
 
+	dealer := rules.NewDealer(input.Shuffler)
+	state, err = dealer.InitHand(state)
+	if err != nil {
+		return domain.HandState{}, err
+	}
+	state, err = dealer.DealPreflop(state)
+	if err != nil {
+		return domain.HandState{}, err
+	}
+
 	state.Phase = domain.HandPhaseBetting
 	state.ActionOrderStartSeat = actingSeat
 	postSB := postBlind(&state, sbSeat, input.Config.SmallBlind)
@@ -74,7 +86,7 @@ func StartNewHand(input StartNewHandInput) (domain.HandState, error) {
 	}
 
 	if countNonFoldedActiveSeats(state.Seats) <= 1 {
-		state.Phase = domain.HandPhaseComplete
+		state = rules.AwardUncontested(state)
 		return state, nil
 	}
 
@@ -123,6 +135,7 @@ func ApplyAction(state domain.HandState, action domain.Action) (domain.HandState
 		}
 		pay := min(toCall, next.Seats[actingIdx].Stack)
 		next.Seats[actingIdx].Stack -= pay
+		next.Seats[actingIdx].TotalCommitted += pay
 		next.Seats[actingIdx].CommittedInRound += pay
 		next.Seats[actingIdx].HasActedThisRound = true
 		next.Pot += pay
@@ -135,6 +148,7 @@ func ApplyAction(state domain.HandState, action domain.Action) (domain.HandState
 		}
 		amount := *action.Amount
 		next.Seats[actingIdx].Stack -= amount
+		next.Seats[actingIdx].TotalCommitted += amount
 		next.Seats[actingIdx].CommittedInRound += amount
 		next.Pot += amount
 		next.CurrentBet = next.Seats[actingIdx].CommittedInRound
@@ -160,6 +174,7 @@ func ApplyAction(state domain.HandState, action domain.Action) (domain.HandState
 		}
 		previousBet := next.CurrentBet
 		next.Seats[actingIdx].Stack -= delta
+		next.Seats[actingIdx].TotalCommitted += delta
 		next.Seats[actingIdx].CommittedInRound += delta
 		next.Pot += delta
 		next.CurrentBet = raiseTo
@@ -173,12 +188,14 @@ func ApplyAction(state domain.HandState, action domain.Action) (domain.HandState
 	}
 
 	if countNonFoldedActiveSeats(next.Seats) <= 1 {
-		next.Phase = domain.HandPhaseComplete
+		next = rules.AwardUncontested(next)
 		return next, nil
 	}
 
 	if isBettingRoundClosed(next) {
-		advanceStreet(&next)
+		if err := advanceStreet(&next); err != nil {
+			return domain.HandState{}, err
+		}
 		if next.Phase != domain.HandPhaseBetting {
 			return next, nil
 		}
@@ -187,7 +204,9 @@ func ApplyAction(state domain.HandState, action domain.Action) (domain.HandState
 
 	nextActor, ok := nextSeat(next.Seats, next.Seats[actingIdx].SeatNo, false, isEligibleToAct)
 	if !ok {
-		advanceStreet(&next)
+		if err := advanceStreet(&next); err != nil {
+			return domain.HandState{}, err
+		}
 		return next, nil
 	}
 	next.ActingSeat = nextActor
@@ -201,6 +220,7 @@ func postBlind(state *domain.HandState, seatNo domain.SeatNo, amount uint32) uin
 	}
 	post := min(state.Seats[idx].Stack, amount)
 	state.Seats[idx].Stack -= post
+	state.Seats[idx].TotalCommitted += post
 	state.Seats[idx].CommittedInRound += post
 	state.Pot += post
 	return post
@@ -226,7 +246,7 @@ func isBettingRoundClosed(state domain.HandState) bool {
 	return true
 }
 
-func advanceStreet(state *domain.HandState) {
+func advanceStreet(state *domain.HandState) error {
 	for i := range state.Seats {
 		state.Seats[i].CommittedInRound = 0
 		state.Seats[i].HasActedThisRound = false
@@ -238,34 +258,47 @@ func advanceStreet(state *domain.HandState) {
 
 	switch state.Street {
 	case domain.StreetPreflop:
+		dealt, err := rules.NewDealer(nil).DealFlopTurnRiver(*state)
+		if err != nil {
+			return err
+		}
+		*state = dealt
 		state.Street = domain.StreetFlop
-		state.Board = make([]domain.Card, 3)
 	case domain.StreetFlop:
+		dealt, err := rules.NewDealer(nil).DealFlopTurnRiver(*state)
+		if err != nil {
+			return err
+		}
+		*state = dealt
 		state.Street = domain.StreetTurn
-		state.Board = make([]domain.Card, 4)
 	case domain.StreetTurn:
+		dealt, err := rules.NewDealer(nil).DealFlopTurnRiver(*state)
+		if err != nil {
+			return err
+		}
+		*state = dealt
 		state.Street = domain.StreetRiver
-		state.Board = make([]domain.Card, 5)
 	case domain.StreetRiver:
 		state.Phase = domain.HandPhaseShowdown
-		return
+		return nil
 	default:
 		state.Phase = domain.HandPhaseShowdown
-		return
+		return nil
 	}
 
 	start, ok := nextSeat(state.Seats, state.ButtonSeat, false, isEligibleToAct)
 	if !ok {
 		if countNonFoldedActiveSeats(state.Seats) <= 1 {
-			state.Phase = domain.HandPhaseComplete
+			*state = rules.AwardUncontested(*state)
 		} else {
 			state.Phase = domain.HandPhaseShowdown
 		}
-		return
+		return nil
 	}
 	state.ActingSeat = start
 	state.ActionOrderStartSeat = start
 	state.Phase = domain.HandPhaseBetting
+	return nil
 }
 
 func sortSeats(seats []domain.SeatState) {
@@ -367,6 +400,22 @@ func cloneState(state domain.HandState) domain.HandState {
 	cloned := state
 	cloned.Seats = append([]domain.SeatState(nil), state.Seats...)
 	cloned.Board = append([]domain.Card(nil), state.Board...)
+	cloned.Deck = append([]domain.Card(nil), state.Deck...)
+	cloned.HoleCards = make([]domain.SeatCards, 0, len(state.HoleCards))
+	for _, seatCards := range state.HoleCards {
+		cloned.HoleCards = append(cloned.HoleCards, domain.SeatCards{
+			SeatNo: seatCards.SeatNo,
+			Cards:  append([]domain.Card(nil), seatCards.Cards...),
+		})
+	}
+	cloned.ShowdownAwards = make([]domain.PotAward, 0, len(state.ShowdownAwards))
+	for _, award := range state.ShowdownAwards {
+		cloned.ShowdownAwards = append(cloned.ShowdownAwards, domain.PotAward{
+			Amount: award.Amount,
+			Seats:  append([]domain.SeatNo(nil), award.Seats...),
+			Reason: award.Reason,
+		})
+	}
 	if state.LastAggressorSeat != nil {
 		seat := *state.LastAggressorSeat
 		cloned.LastAggressorSeat = &seat
