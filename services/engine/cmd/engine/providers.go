@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -63,10 +64,8 @@ func (p humanProvider) NextAction(ctx context.Context, state domain.HandState) (
 			}
 		}
 
-		options := "fold(f)/check(k)/bet(b) <amt>"
-		if toCall > 0 {
-			options = "fold(f)/check(k)/call(c)/raise(r) <amt>"
-		}
+		hasOpenBet := state.CurrentBet > 0
+		options := buildPromptOptions(hasOpenBet, toCall)
 
 		fmt.Fprint(p.out, renderMiniPokerTable(state, toCall, options))
 		if !p.in.Scan() {
@@ -78,15 +77,31 @@ func (p humanProvider) NextAction(ctx context.Context, state domain.HandState) (
 
 		rawInput := strings.ToLower(strings.TrimSpace(p.in.Text()))
 		if rawInput == "bet" || rawInput == "b" {
-			amount := state.MinRaiseTo
-			label := "minimum bet"
-			kind := domain.ActionBet
-			if toCall > 0 {
-				label = "minimum raise"
-				kind = domain.ActionRaise
+			if hasOpenBet {
+				fmt.Fprintf(p.out, "invalid action. valid: %s\n", options)
+				continue
 			}
-			fmt.Fprintf(p.out, "interpreting bare 'bet' as %s to %d\n", label, amount)
-			action, err := domain.NewAction(kind, &amount)
+			amount := state.MinRaiseTo
+			fmt.Fprintf(p.out, "interpreting bare 'bet' as minimum bet to %d\n", amount)
+			action, err := domain.NewAction(domain.ActionBet, &amount)
+			if err != nil {
+				fmt.Fprintf(p.out, "invalid action. valid: %s\n", options)
+				continue
+			}
+			if err := validateHumanAction(state, action); err != nil {
+				fmt.Fprintf(p.out, "illegal action: %v\n", err)
+				continue
+			}
+			return action, nil
+		}
+		if rawInput == "raise" || rawInput == "r" {
+			if !hasOpenBet {
+				fmt.Fprintf(p.out, "invalid action. valid: %s\n", options)
+				continue
+			}
+			amount := state.MinRaiseTo
+			fmt.Fprintf(p.out, "interpreting bare 'r' as minimum raise to %d\n", amount)
+			action, err := domain.NewAction(domain.ActionRaise, &amount)
 			if err != nil {
 				fmt.Fprintf(p.out, "invalid action. valid: %s\n", options)
 				continue
@@ -103,6 +118,10 @@ func (p humanProvider) NextAction(ctx context.Context, state domain.HandState) (
 			fmt.Fprintf(p.out, "invalid action. valid: %s\n", options)
 			continue
 		}
+		if !isActionAllowedForPrompt(action.Kind, hasOpenBet, toCall) {
+			fmt.Fprintf(p.out, "invalid action. valid: %s\n", options)
+			continue
+		}
 		if err := validateHumanAction(state, action); err != nil {
 			fmt.Fprintf(p.out, "illegal action: %v\n", err)
 			continue
@@ -112,6 +131,26 @@ func (p humanProvider) NextAction(ctx context.Context, state domain.HandState) (
 		}
 		return action, nil
 	}
+}
+
+func buildPromptOptions(hasOpenBet bool, toCall uint32) string {
+	if !hasOpenBet {
+		return "fold(f)/check(k)/bet(b) <amt>"
+	}
+	if toCall > 0 {
+		return "fold(f)/call(c)/raise(r) <amt>"
+	}
+	return "fold(f)/check(k)/raise(r) <amt>"
+}
+
+func isActionAllowedForPrompt(kind domain.ActionKind, hasOpenBet bool, toCall uint32) bool {
+	if !hasOpenBet {
+		return kind == domain.ActionFold || kind == domain.ActionCheck || kind == domain.ActionBet
+	}
+	if toCall > 0 {
+		return kind == domain.ActionFold || kind == domain.ActionCall || kind == domain.ActionRaise
+	}
+	return kind == domain.ActionFold || kind == domain.ActionCheck || kind == domain.ActionRaise
 }
 
 func parseHumanAction(input string) (domain.Action, error) {
@@ -198,7 +237,7 @@ func validateHumanAction(state domain.HandState, action domain.Action) error {
 		}
 		return nil
 	case domain.ActionRaise:
-		if toCall == 0 || state.CurrentBet == 0 {
+		if state.CurrentBet == 0 {
 			return errors.New("cannot raise when there is no existing bet; use bet")
 		}
 		if action.Amount == nil || *action.Amount == 0 {
@@ -221,10 +260,11 @@ func validateHumanAction(state domain.HandState, action domain.Action) error {
 }
 
 type seatProvider struct {
-	humanSeat domain.SeatNo
-	human     tablerunner.ActionProvider
-	bot       tablerunner.ActionProvider
-	out       io.Writer
+	humanSeat    domain.SeatNo
+	human        tablerunner.ActionProvider
+	bot          tablerunner.ActionProvider
+	out          io.Writer
+	recordAction func(actionEvent)
 }
 
 func (p seatProvider) NextAction(ctx context.Context, state domain.HandState) (domain.Action, error) {
@@ -237,12 +277,30 @@ func (p seatProvider) NextAction(ctx context.Context, state domain.HandState) (d
 		if err != nil {
 			return action, err
 		}
+		if p.recordAction != nil {
+			p.recordAction(actionEvent{
+				HandNo: state.HandNo,
+				Street: state.Street,
+				Seat:   state.ActingSeat,
+				Action: action.Kind,
+				Amount: action.Amount,
+			})
+		}
 		fmt.Fprintf(out, "you (seat %d) -> %s\n", state.ActingSeat, formatAction(action))
 		return action, nil
 	}
 	action, err := p.bot.NextAction(ctx, state)
 	if err != nil {
 		return action, err
+	}
+	if p.recordAction != nil {
+		p.recordAction(actionEvent{
+			HandNo: state.HandNo,
+			Street: state.Street,
+			Seat:   state.ActingSeat,
+			Action: action.Kind,
+			Amount: action.Amount,
+		})
 	}
 	fmt.Fprintf(out, "bot (seat %d) -> %s\n", state.ActingSeat, formatAction(action))
 	return action, nil
@@ -255,9 +313,33 @@ func formatAction(action domain.Action) string {
 	return fmt.Sprintf("%s %d", action.Kind, *action.Amount)
 }
 
+type recordingProvider struct {
+	inner        tablerunner.ActionProvider
+	recordAction func(actionEvent)
+}
+
+func (p recordingProvider) NextAction(ctx context.Context, state domain.HandState) (domain.Action, error) {
+	action, err := p.inner.NextAction(ctx, state)
+	if err != nil {
+		return action, err
+	}
+	if p.recordAction != nil {
+		p.recordAction(actionEvent{
+			HandNo: state.HandNo,
+			Street: state.Street,
+			Seat:   state.ActingSeat,
+			Action: action.Kind,
+			Amount: action.Amount,
+		})
+	}
+	return action, nil
+}
+
 const tablePromptWidth = 58
 
 func renderMiniPokerTable(state domain.HandState, toCall uint32, options string) string {
+	positionBySeat := buildPositionBySeat(state)
+
 	lines := []string{
 		"MINI ASCII POKER TABLE",
 		fmt.Sprintf("Hand #%d | Table: %s", state.HandNo, state.TableID),
@@ -272,7 +354,7 @@ func renderMiniPokerTable(state domain.HandState, toCall uint32, options string)
 	}
 
 	for i := range state.Seats {
-		lines = append(lines, formatSeatPromptLine(state.Seats[i], state))
+		lines = append(lines, formatSeatPromptLine(state.Seats[i], state, positionBySeat[state.Seats[i].SeatNo]))
 	}
 
 	lines = append(lines, fmt.Sprintf("Options: %s", options))
@@ -294,7 +376,7 @@ func framePromptLine(content string) string {
 	return fmt.Sprintf("| %-*s |\n", tablePromptWidth, content)
 }
 
-func formatSeatPromptLine(seat domain.SeatState, state domain.HandState) string {
+func formatSeatPromptLine(seat domain.SeatState, state domain.HandState, position string) string {
 	marker := " "
 	if seat.SeatNo == state.ActingSeat {
 		marker = ">"
@@ -324,14 +406,77 @@ func formatSeatPromptLine(seat domain.SeatState, state domain.HandState) string 
 	}
 
 	return fmt.Sprintf(
-		"%s %s Seat %d | stack:%d | in:%d%s",
+		"%s %s Seat %d (%s) | stack:%d | in:%d%s",
 		marker,
 		role,
 		seat.SeatNo,
+		position,
 		seat.Stack,
 		seat.CommittedInRound,
 		status,
 	)
+}
+
+func buildPositionBySeat(state domain.HandState) map[domain.SeatNo]string {
+	ordered := make([]domain.SeatNo, 0, len(state.Seats))
+	for _, seat := range state.Seats {
+		// Keep positions for seated, non-busted players.
+		if seat.Status == domain.SeatStatusBusted {
+			continue
+		}
+		ordered = append(ordered, seat.SeatNo)
+	}
+
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	if len(ordered) == 0 {
+		return map[domain.SeatNo]string{}
+	}
+
+	buttonIdx := -1
+	for i, seatNo := range ordered {
+		if seatNo == state.ButtonSeat {
+			buttonIdx = i
+			break
+		}
+	}
+	if buttonIdx < 0 {
+		buttonIdx = 0
+	}
+
+	rotated := make([]domain.SeatNo, 0, len(ordered))
+	for i := 0; i < len(ordered); i++ {
+		rotated = append(rotated, ordered[(buttonIdx+i)%len(ordered)])
+	}
+
+	labels := labelsForSeatCount(len(rotated))
+	positionBySeat := make(map[domain.SeatNo]string, len(rotated))
+	for i, seatNo := range rotated {
+		label := labels[i]
+		if label == "" {
+			label = "-"
+		}
+		positionBySeat[seatNo] = label
+	}
+	return positionBySeat
+}
+
+func labelsForSeatCount(count int) []string {
+	switch count {
+	case 0:
+		return []string{}
+	case 1:
+		return []string{"BTN"}
+	case 2:
+		return []string{"BTN/SB", "BB"}
+	case 3:
+		return []string{"BTN", "SB", "BB"}
+	case 4:
+		return []string{"BTN", "SB", "BB", "UTG"}
+	case 5:
+		return []string{"BTN", "SB", "BB", "UTG", "CO"}
+	default:
+		return []string{"BTN", "SB", "BB", "UTG", "HJ", "CO"}
+	}
 }
 
 func formatBoardCards(board []domain.Card) string {

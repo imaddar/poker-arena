@@ -206,14 +206,14 @@ func TestHumanProviderRejectsIllegalCheckWhenFacingBet(t *testing.T) {
 	if action.Kind != domain.ActionCall {
 		t.Fatalf("expected call action, got %q", action.Kind)
 	}
-	if !strings.Contains(out.String(), "illegal action") {
-		t.Fatalf("expected illegal action hint in output, got %q", out.String())
+	if !strings.Contains(out.String(), "invalid action") {
+		t.Fatalf("expected invalid action hint in output, got %q", out.String())
 	}
 	if !strings.Contains(out.String(), "raise(r) <amt>") {
 		t.Fatalf("expected raise option in prompt, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "Options: fold(f)/check(k)/call(c)/raise(r) <amt>") {
-		t.Fatalf("expected call option when to_call>0, got %q", out.String())
+	if !strings.Contains(out.String(), "Options: fold(f)/call(c)/raise(r) <amt>") {
+		t.Fatalf("expected check hidden when to_call>0, got %q", out.String())
 	}
 }
 
@@ -308,9 +308,47 @@ func TestHumanProviderPromptIncludesSeatAndBoardInfo(t *testing.T) {
 	if !strings.Contains(rendered, "> A Seat 2") {
 		t.Fatalf("expected acting marker for seat 2, got %q", rendered)
 	}
+	if !strings.Contains(rendered, "(BTN/SB)") {
+		t.Fatalf("expected heads-up BTN/SB position label, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(BB)") {
+		t.Fatalf("expected heads-up BB position label, got %q", rendered)
+	}
 }
 
-func TestHumanProvider_BareBetBecomesMinimumRaiseWhenFacingBet(t *testing.T) {
+func TestRenderMiniPokerTable_SixMaxShowsNamedPositions(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	state := domain.HandState{
+		HandNo:     7,
+		TableID:    "local-table-1",
+		ButtonSeat: mustSeatNo(t, cfg, 1),
+		ActingSeat: mustSeatNo(t, cfg, 4),
+		Street:     domain.StreetPreflop,
+		Pot:        150,
+		CurrentBet: 100,
+		MinRaiseTo: 200,
+		Seats: []domain.SeatState{
+			{SeatNo: mustSeatNo(t, cfg, 1), Stack: 10000},
+			{SeatNo: mustSeatNo(t, cfg, 2), Stack: 10000},
+			{SeatNo: mustSeatNo(t, cfg, 3), Stack: 10000},
+			{SeatNo: mustSeatNo(t, cfg, 4), Stack: 10000},
+			{SeatNo: mustSeatNo(t, cfg, 5), Stack: 10000},
+			{SeatNo: mustSeatNo(t, cfg, 6), Stack: 10000},
+		},
+	}
+
+	rendered := renderMiniPokerTable(state, 100, "fold(f)/call(c)/raise(r) <amt>")
+
+	for _, position := range []string{"(BTN)", "(SB)", "(BB)", "(UTG)", "(HJ)", "(CO)"} {
+		if !strings.Contains(rendered, position) {
+			t.Fatalf("expected position %s in output, got %q", position, rendered)
+		}
+	}
+}
+
+func TestHumanProvider_BareBetIsInvalidWhenFacingOpenBet(t *testing.T) {
 	t.Parallel()
 
 	cfg := domain.DefaultV0TableConfig()
@@ -323,7 +361,39 @@ func TestHumanProvider_BareBetBecomesMinimumRaiseWhenFacingBet(t *testing.T) {
 		Seats:      []domain.SeatState{{SeatNo: seat, Stack: 1000, CommittedInRound: 50}},
 	}
 
-	in := strings.NewReader("bet\n")
+	in := strings.NewReader("bet\nraise 250\n")
+	out := &strings.Builder{}
+	provider := newHumanProvider(in, out)
+
+	action, err := provider.NextAction(context.Background(), state)
+	if err != nil {
+		t.Fatalf("NextAction failed: %v", err)
+	}
+	if action.Kind != domain.ActionRaise {
+		t.Fatalf("expected raise action, got %q", action.Kind)
+	}
+	if action.Amount == nil || *action.Amount != 250 {
+		t.Fatalf("expected raise amount 250, got %v", action.Amount)
+	}
+	if !strings.Contains(out.String(), "invalid action") {
+		t.Fatalf("expected invalid action hint for bare bet, got %q", out.String())
+	}
+}
+
+func TestHumanProvider_BareRBecomesMinimumRaiseWhenFacingOpenBet(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	seat := mustSeatNo(t, cfg, 1)
+
+	state := domain.HandState{
+		ActingSeat: seat,
+		CurrentBet: 100,
+		MinRaiseTo: 250,
+		Seats:      []domain.SeatState{{SeatNo: seat, Stack: 1000, CommittedInRound: 50}},
+	}
+
+	in := strings.NewReader("r\n")
 	out := &strings.Builder{}
 	provider := newHumanProvider(in, out)
 
