@@ -336,10 +336,73 @@ func TestRunTable_PreservesChipConservationAcrossHands(t *testing.T) {
 	}
 }
 
+func TestRunTable_CompletesOneHundredHandsWithDeterministicProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(&deterministicProvider{}, RunnerConfig{})
+
+	result, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   100,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	if result.HandsCompleted != 100 {
+		t.Fatalf("expected 100 hands completed, got %d", result.HandsCompleted)
+	}
+	if len(result.HandSummaries) != 100 {
+		t.Fatalf("expected 100 hand summaries, got %d", len(result.HandSummaries))
+	}
+}
+
+func TestRunTable_OneHundredHandsPreserveChipConservation(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	runner := New(&deterministicProvider{}, RunnerConfig{})
+
+	result, err := runner.RunTable(context.Background(), RunTableInput{
+		TableID:      "table-1",
+		StartingHand: 1,
+		HandsToRun:   100,
+		ButtonSeat:   mustSeatNo(t, cfg, 1),
+		Seats:        activeSeats(t, cfg, 1, 2),
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunTable failed: %v", err)
+	}
+
+	initialTotal := cfg.StartingStack * 2
+	for i, summary := range result.HandSummaries {
+		got := chipTotal(summary.FinalState)
+		if got != initialTotal {
+			t.Fatalf("hand %d chip conservation failed: want %d got %d", i+1, initialTotal, got)
+		}
+	}
+
+	final := uint32(0)
+	for _, seat := range result.FinalSeats {
+		final += seat.Stack
+	}
+	if final != initialTotal {
+		t.Fatalf("final seat chip total failed: want %d got %d", initialTotal, final)
+	}
+}
+
 type scriptedProvider struct {
 	steps []scriptedStep
 	i     int
 }
+
+type deterministicProvider struct{}
 
 type scriptedStep struct {
 	action domain.Action
@@ -357,6 +420,33 @@ func (p *scriptedProvider) NextAction(_ context.Context, _ domain.HandState) (do
 	step := p.steps[p.i]
 	p.i++
 	return step.action, step.err
+}
+
+func (p *deterministicProvider) NextAction(_ context.Context, state domain.HandState) (domain.Action, error) {
+	var actingSeat *domain.SeatState
+	for i := range state.Seats {
+		if state.Seats[i].SeatNo == state.ActingSeat {
+			actingSeat = &state.Seats[i]
+			break
+		}
+	}
+	if actingSeat == nil {
+		return domain.Action{}, fmt.Errorf("acting seat %d not found", state.ActingSeat)
+	}
+
+	if state.CurrentBet > actingSeat.CommittedInRound {
+		action, err := domain.NewAction(domain.ActionCall, nil)
+		if err != nil {
+			return domain.Action{}, err
+		}
+		return action, nil
+	}
+
+	action, err := domain.NewAction(domain.ActionCheck, nil)
+	if err != nil {
+		return domain.Action{}, err
+	}
+	return action, nil
 }
 
 func actionCall(t *testing.T) scriptedStep {
