@@ -159,16 +159,22 @@ func TestHumanProviderReadsUntilValidAction(t *testing.T) {
 	if !strings.Contains(out.String(), "invalid action") {
 		t.Fatalf("expected invalid action hint in output, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "street=flop") {
+	if !strings.Contains(out.String(), "MINI ASCII POKER TABLE") {
+		t.Fatalf("expected ASCII table header in prompt, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Street: flop") {
 		t.Fatalf("expected street in prompt, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "bet(b) <amt>") {
+	if !strings.Contains(out.String(), "To Call: 0") {
+		t.Fatalf("expected to-call info in prompt, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "bet(b)") {
 		t.Fatalf("expected bet option in prompt, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "fold(f)/check(k)/bet(b)") {
+	if !strings.Contains(out.String(), "Options: fold(f)/check(k)/bet(b) <amt>") {
 		t.Fatalf("expected short aliases in prompt, got %q", out.String())
 	}
-	if strings.Contains(out.String(), "options: fold/check/call/") {
+	if strings.Contains(out.String(), "call(c)") {
 		t.Fatalf("did not expect call option when to_call=0, got %q", out.String())
 	}
 	if !strings.Contains(out.String(), "checked on flop") {
@@ -206,7 +212,7 @@ func TestHumanProviderRejectsIllegalCheckWhenFacingBet(t *testing.T) {
 	if !strings.Contains(out.String(), "raise(r) <amt>") {
 		t.Fatalf("expected raise option in prompt, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "options: fold(f)/check(k)/call(c)/raise(r) <amt>") {
+	if !strings.Contains(out.String(), "Options: fold(f)/check(k)/call(c)/raise(r) <amt>") {
 		t.Fatalf("expected call option when to_call>0, got %q", out.String())
 	}
 }
@@ -238,8 +244,69 @@ func TestHumanProviderRejectsRaiseBelowMinimum(t *testing.T) {
 	if action.Amount == nil || *action.Amount != 300 {
 		t.Fatalf("expected raise amount 300, got %v", action.Amount)
 	}
-	if !strings.Contains(out.String(), "min_raise_to") {
+	if !strings.Contains(out.String(), "Min Raise To: 250") {
 		t.Fatalf("expected min_raise_to hint in output, got %q", out.String())
+	}
+}
+
+func TestHumanProviderPromptIncludesSeatAndBoardInfo(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	seat1 := mustSeatNo(t, cfg, 1)
+	seat2 := mustSeatNo(t, cfg, 2)
+	rankA, err := domain.NewRank(14)
+	if err != nil {
+		t.Fatalf("NewRank failed: %v", err)
+	}
+	rankK, err := domain.NewRank(13)
+	if err != nil {
+		t.Fatalf("NewRank failed: %v", err)
+	}
+
+	state := domain.HandState{
+		HandNo:     42,
+		TableID:    "local-table-1",
+		ButtonSeat: seat1,
+		ActingSeat: seat2,
+		Street:     domain.StreetFlop,
+		Pot:        120,
+		CurrentBet: 100,
+		MinRaiseTo: 160,
+		Board: []domain.Card{
+			domain.NewCard(rankA, domain.SuitSpades),
+			domain.NewCard(rankK, domain.SuitHearts),
+		},
+		Seats: []domain.SeatState{
+			{SeatNo: seat1, Stack: 980, CommittedInRound: 20},
+			{SeatNo: seat2, Stack: 900, CommittedInRound: 80},
+		},
+	}
+
+	in := strings.NewReader("call\n")
+	out := &strings.Builder{}
+	provider := newHumanProvider(in, out)
+
+	_, err = provider.NextAction(context.Background(), state)
+	if err != nil {
+		t.Fatalf("NextAction failed: %v", err)
+	}
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "Hand #42") {
+		t.Fatalf("expected hand number in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Table: local-table-1") {
+		t.Fatalf("expected table id in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Board: As Kh -- -- --") {
+		t.Fatalf("expected board cards in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "D Seat 1") {
+		t.Fatalf("expected dealer marker for seat 1, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "> A Seat 2") {
+		t.Fatalf("expected acting marker for seat 2, got %q", rendered)
 	}
 }
 

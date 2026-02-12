@@ -68,15 +68,7 @@ func (p humanProvider) NextAction(ctx context.Context, state domain.HandState) (
 			options = "fold(f)/check(k)/call(c)/raise(r) <amt>"
 		}
 
-		fmt.Fprintf(
-			p.out,
-			"seat %d action (street=%s, to_call=%d, min_raise_to=%d, options: %s): ",
-			state.ActingSeat,
-			state.Street,
-			toCall,
-			state.MinRaiseTo,
-			options,
-		)
+		fmt.Fprint(p.out, renderMiniPokerTable(state, toCall, options))
 		if !p.in.Scan() {
 			if err := p.in.Err(); err != nil {
 				return domain.Action{}, err
@@ -261,4 +253,131 @@ func formatAction(action domain.Action) string {
 		return string(action.Kind)
 	}
 	return fmt.Sprintf("%s %d", action.Kind, *action.Amount)
+}
+
+const tablePromptWidth = 58
+
+func renderMiniPokerTable(state domain.HandState, toCall uint32, options string) string {
+	lines := []string{
+		"MINI ASCII POKER TABLE",
+		fmt.Sprintf("Hand #%d | Table: %s", state.HandNo, state.TableID),
+		fmt.Sprintf("Street: %s | Pot: %d | To Call: %d", state.Street, state.Pot, toCall),
+		fmt.Sprintf("Current Bet: %d | Min Raise To: %d", state.CurrentBet, state.MinRaiseTo),
+		fmt.Sprintf("Board: %s", formatBoardCards(state.Board)),
+		"                    .----------------------.",
+		"                   /                        \\",
+		"                  |        TABLE VIEW        |",
+		"                   \\                        /",
+		"                    '----------------------'",
+	}
+
+	for i := range state.Seats {
+		lines = append(lines, formatSeatPromptLine(state.Seats[i], state))
+	}
+
+	lines = append(lines, fmt.Sprintf("Options: %s", options))
+
+	var builder strings.Builder
+	builder.WriteString("+" + strings.Repeat("-", tablePromptWidth+2) + "+\n")
+	for _, line := range lines {
+		builder.WriteString(framePromptLine(line))
+	}
+	builder.WriteString("+" + strings.Repeat("-", tablePromptWidth+2) + "+\n")
+	builder.WriteString("Action > ")
+	return builder.String()
+}
+
+func framePromptLine(content string) string {
+	if len(content) > tablePromptWidth {
+		content = content[:tablePromptWidth]
+	}
+	return fmt.Sprintf("| %-*s |\n", tablePromptWidth, content)
+}
+
+func formatSeatPromptLine(seat domain.SeatState, state domain.HandState) string {
+	marker := " "
+	if seat.SeatNo == state.ActingSeat {
+		marker = ">"
+	}
+
+	role := "-"
+	switch {
+	case seat.SeatNo == state.ActingSeat && seat.SeatNo == state.ButtonSeat:
+		role = "A/D"
+	case seat.SeatNo == state.ActingSeat:
+		role = "A"
+	case seat.SeatNo == state.ButtonSeat:
+		role = "D"
+	}
+
+	extras := make([]string, 0, 2)
+	if seat.Folded {
+		extras = append(extras, "folded")
+	}
+	if seat.Status != "" && seat.Status != domain.SeatStatusActive {
+		extras = append(extras, string(seat.Status))
+	}
+
+	status := ""
+	if len(extras) > 0 {
+		status = " [" + strings.Join(extras, ", ") + "]"
+	}
+
+	return fmt.Sprintf(
+		"%s %s Seat %d | stack:%d | in:%d%s",
+		marker,
+		role,
+		seat.SeatNo,
+		seat.Stack,
+		seat.CommittedInRound,
+		status,
+	)
+}
+
+func formatBoardCards(board []domain.Card) string {
+	formatted := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		if i < len(board) {
+			formatted = append(formatted, formatCard(board[i]))
+			continue
+		}
+		formatted = append(formatted, "--")
+	}
+	return strings.Join(formatted, " ")
+}
+
+func formatCard(card domain.Card) string {
+	return formatRank(card.Rank) + formatSuit(card.Suit)
+}
+
+func formatRank(rank domain.Rank) string {
+	switch uint8(rank) {
+	case 14:
+		return "A"
+	case 13:
+		return "K"
+	case 12:
+		return "Q"
+	case 11:
+		return "J"
+	case 10:
+		return "T"
+	default:
+		return strconv.FormatUint(uint64(rank), 10)
+	}
+}
+
+func formatSuit(suit domain.Suit) string {
+	switch suit {
+	case domain.SuitClubs:
+		return "c"
+	case domain.SuitDiamonds:
+		return "d"
+	case domain.SuitHearts:
+		return "h"
+	case domain.SuitSpades:
+		return "s"
+	default:
+		return "?"
+	}
 }
