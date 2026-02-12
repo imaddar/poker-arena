@@ -122,23 +122,27 @@ const (
 )
 
 type SeatState struct {
-	SeatNo           SeatNo     `json:"seat_no"`
-	Stack            uint32     `json:"stack"`
-	CommittedInRound uint32     `json:"committed_in_round"`
-	Status           SeatStatus `json:"status"`
+	SeatNo            SeatNo     `json:"seat_no"`
+	Stack             uint32     `json:"stack"`
+	CommittedInRound  uint32     `json:"committed_in_round"`
+	Folded            bool       `json:"folded"`
+	HasActedThisRound bool       `json:"has_acted_this_round"`
+	Status            SeatStatus `json:"status"`
 }
 
 func NewSeatState(seatNo SeatNo, stack uint32) SeatState {
 	return SeatState{
-		SeatNo:           seatNo,
-		Stack:            stack,
-		CommittedInRound: 0,
-		Status:           SeatStatusActive,
+		SeatNo:            seatNo,
+		Stack:             stack,
+		CommittedInRound:  0,
+		Folded:            false,
+		HasActedThisRound: false,
+		Status:            SeatStatusActive,
 	}
 }
 
 func (s SeatState) IsActive() bool {
-	return s.Status == SeatStatusActive
+	return s.Status == SeatStatusActive && !s.Folded
 }
 
 type TableConfig struct {
@@ -187,16 +191,23 @@ const (
 )
 
 type HandState struct {
-	HandID     string      `json:"hand_id"`
-	TableID    string      `json:"table_id"`
-	HandNo     uint64      `json:"hand_no"`
-	ButtonSeat SeatNo      `json:"button_seat"`
-	ActingSeat SeatNo      `json:"acting_seat"`
-	Phase      HandPhase   `json:"phase"`
-	Street     Street      `json:"street"`
-	Pot        uint32      `json:"pot"`
-	Board      []Card      `json:"board"`
-	Seats      []SeatState `json:"seats"`
+	HandID               string      `json:"hand_id"`
+	TableID              string      `json:"table_id"`
+	HandNo               uint64      `json:"hand_no"`
+	ButtonSeat           SeatNo      `json:"button_seat"`
+	SmallBlind           uint32      `json:"small_blind"`
+	BigBlind             uint32      `json:"big_blind"`
+	ActingSeat           SeatNo      `json:"acting_seat"`
+	ActionOrderStartSeat SeatNo      `json:"action_order_start_seat"`
+	LastAggressorSeat    *SeatNo     `json:"last_aggressor_seat,omitempty"`
+	Phase                HandPhase   `json:"phase"`
+	Street               Street      `json:"street"`
+	Pot                  uint32      `json:"pot"`
+	CurrentBet           uint32      `json:"current_bet"`
+	MinRaiseTo           uint32      `json:"min_raise_to"`
+	LastFullRaise        uint32      `json:"last_full_raise"`
+	Board                []Card      `json:"board"`
+	Seats                []SeatState `json:"seats"`
 }
 
 func NewHandState(
@@ -245,16 +256,23 @@ func NewHandState(
 	}
 
 	return HandState{
-		HandID:     handID,
-		TableID:    tableID,
-		HandNo:     handNo,
-		ButtonSeat: buttonSeat,
-		ActingSeat: actingSeat,
-		Phase:      HandPhaseDealing,
-		Street:     StreetPreflop,
-		Pot:        0,
-		Board:      make([]Card, 0, 5),
-		Seats:      append([]SeatState(nil), seats...),
+		HandID:               handID,
+		TableID:              tableID,
+		HandNo:               handNo,
+		ButtonSeat:           buttonSeat,
+		SmallBlind:           config.SmallBlind,
+		BigBlind:             config.BigBlind,
+		ActingSeat:           actingSeat,
+		ActionOrderStartSeat: actingSeat,
+		LastAggressorSeat:    nil,
+		Phase:                HandPhaseDealing,
+		Street:               StreetPreflop,
+		Pot:                  0,
+		CurrentBet:           0,
+		MinRaiseTo:           config.BigBlind,
+		LastFullRaise:        0,
+		Board:                make([]Card, 0, 5),
+		Seats:                append([]SeatState(nil), seats...),
 	}, nil
 }
 
