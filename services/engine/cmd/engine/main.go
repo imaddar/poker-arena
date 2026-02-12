@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 
@@ -10,6 +11,11 @@ import (
 )
 
 func main() {
+	mode := flag.String("mode", "sim", "run mode: sim or play")
+	hands := flag.Int("hands", 0, "number of hands to run (defaults: sim=100, play=1)")
+	humanSeatRaw := flag.Int("human-seat", 1, "human-controlled seat number when mode=play")
+	flag.Parse()
+
 	cfg := domain.DefaultV0TableConfig()
 	seat1, err := domain.NewSeatNo(1, cfg.MaxSeats)
 	if err != nil {
@@ -27,15 +33,36 @@ func main() {
 		domain.NewSeatState(seat2, cfg.StartingStack),
 	}
 
-	provider := deterministicProvider{}
+	runHands := *hands
+	if runHands <= 0 {
+		runHands = 100
+		if *mode == "play" {
+			runHands = 1
+		}
+	}
+
+	provider := tablerunner.ActionProvider(deterministicProvider{})
+	if *mode == "play" {
+		humanSeat, err := domain.NewSeatNo(uint8(*humanSeatRaw), cfg.MaxSeats)
+		if err != nil {
+			slog.Error("simulation failed", "error", err)
+			os.Exit(1)
+		}
+		provider = seatProvider{
+			humanSeat: humanSeat,
+			human:     newHumanProvider(os.Stdin, os.Stdout),
+			bot:       deterministicProvider{},
+		}
+	}
+
 	runner := tablerunner.New(provider, tablerunner.RunnerConfig{})
 
-	slog.Info("starting local simulation", "hands_to_run", 100, "table_id", "local-table-1")
+	slog.Info("starting local simulation", "mode", *mode, "hands_to_run", runHands, "table_id", "local-table-1")
 
 	result, err := runner.RunTable(context.Background(), tablerunner.RunTableInput{
 		TableID:      "local-table-1",
 		StartingHand: 1,
-		HandsToRun:   100,
+		HandsToRun:   runHands,
 		ButtonSeat:   seat1,
 		Seats:        seats,
 		Config:       cfg,
@@ -62,26 +89,4 @@ func main() {
 		"total_fallbacks", result.TotalFallbacks,
 		"final_button", result.FinalButton,
 	)
-}
-
-type deterministicProvider struct{}
-
-func (p deterministicProvider) NextAction(_ context.Context, state domain.HandState) (domain.Action, error) {
-	var actingSeat *domain.SeatState
-	for i := range state.Seats {
-		if state.Seats[i].SeatNo == state.ActingSeat {
-			actingSeat = &state.Seats[i]
-			break
-		}
-	}
-
-	if actingSeat == nil {
-		return domain.Action{}, tablerunner.ErrRunnerMisconfigured
-	}
-
-	if state.CurrentBet > actingSeat.CommittedInRound {
-		return domain.NewAction(domain.ActionCall, nil)
-	}
-
-	return domain.NewAction(domain.ActionCheck, nil)
 }
