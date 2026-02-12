@@ -73,7 +73,7 @@ func main() {
 			&humanSeat,
 			seat1,
 			cfg,
-			runnerFromProvider(provider),
+			provider,
 			&events,
 		)
 		return
@@ -88,13 +88,9 @@ func main() {
 		nil,
 		seat1,
 		cfg,
-		runnerFromProvider(provider),
+		provider,
 		&events,
 	)
-}
-
-func runnerFromProvider(provider tablerunner.ActionProvider) tablerunner.Runner {
-	return tablerunner.New(provider, tablerunner.RunnerConfig{})
 }
 
 func runWithReport(
@@ -106,9 +102,24 @@ func runWithReport(
 	humanSeat *domain.SeatNo,
 	buttonSeat domain.SeatNo,
 	cfg domain.TableConfig,
-	runner tablerunner.Runner,
+	provider tablerunner.ActionProvider,
 	events *[]actionEvent,
 ) {
+	livePrevious := make(map[domain.SeatNo]uint32, len(initialSeats))
+	for _, seat := range initialSeats {
+		livePrevious[seat.SeatNo] = seat.Stack
+	}
+
+	runnerConfig := tablerunner.RunnerConfig{}
+	if mode == "play" {
+		runnerConfig.OnHandComplete = func(summary tablerunner.HandSummary) {
+			timeline := timelineForHand(*events, summary.HandNo)
+			hand := buildRunReportHand(summary, timeline)
+			fmt.Print(renderHandSection(hand, livePrevious))
+		}
+	}
+
+	runner := tablerunner.New(provider, runnerConfig)
 	result, err := runner.RunTable(context.Background(), tablerunner.RunTableInput{
 		TableID:      tableID,
 		StartingHand: 1,
@@ -132,7 +143,11 @@ func runWithReport(
 		Timeline:       append([]actionEvent(nil), (*events)...),
 	})
 
-	fmt.Print(renderRunOutput(report))
+	if mode == "play" {
+		fmt.Print(renderRunCompletion(report))
+	} else {
+		fmt.Print(renderRunOutput(report))
+	}
 
 	if outPath != "" {
 		if err := writeRunReportJSON(outPath, report); err != nil {
@@ -141,4 +156,15 @@ func runWithReport(
 		}
 		fmt.Printf("wrote run report: %s\n", outPath)
 	}
+}
+
+func timelineForHand(events []actionEvent, handNo uint64) []runReportAction {
+	timeline := make([]runReportAction, 0, 16)
+	for _, event := range events {
+		if event.HandNo != handNo {
+			continue
+		}
+		timeline = append(timeline, mapActionEvent(event))
+	}
+	return timeline
 }

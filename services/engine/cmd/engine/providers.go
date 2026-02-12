@@ -346,6 +346,7 @@ func renderMiniPokerTable(state domain.HandState, toCall uint32, options string)
 		fmt.Sprintf("Street: %s | Pot: %d | To Call: %d", state.Street, state.Pot, toCall),
 		fmt.Sprintf("Current Bet: %d | Min Raise To: %d", state.CurrentBet, state.MinRaiseTo),
 		fmt.Sprintf("Board: %s", formatBoardCards(state.Board)),
+		fmt.Sprintf("Hole: %s", formatHoleCards(state, state.ActingSeat)),
 		"                    .----------------------.",
 		"                   /                        \\",
 		"                  |        TABLE VIEW        |",
@@ -489,6 +490,19 @@ func formatBoardCards(board []domain.Card) string {
 		formatted = append(formatted, "--")
 	}
 	return strings.Join(formatted, " ")
+}
+
+func formatHoleCards(state domain.HandState, seat domain.SeatNo) string {
+	for _, seatCards := range state.HoleCards {
+		if seatCards.SeatNo != seat {
+			continue
+		}
+		if len(seatCards.Cards) != 2 {
+			return "-- --"
+		}
+		return formatCard(seatCards.Cards[0]) + " " + formatCard(seatCards.Cards[1])
+	}
+	return "-- --"
 }
 
 func formatCard(card domain.Card) string {

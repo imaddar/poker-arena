@@ -165,6 +165,9 @@ func TestHumanProviderReadsUntilValidAction(t *testing.T) {
 	if !strings.Contains(out.String(), "Street: flop") {
 		t.Fatalf("expected street in prompt, got %q", out.String())
 	}
+	if !strings.Contains(out.String(), "Hole: -- --") {
+		t.Fatalf("expected hidden hole cards placeholder in prompt, got %q", out.String())
+	}
 	if !strings.Contains(out.String(), "To Call: 0") {
 		t.Fatalf("expected to-call info in prompt, got %q", out.String())
 	}
@@ -277,6 +280,15 @@ func TestHumanProviderPromptIncludesSeatAndBoardInfo(t *testing.T) {
 			domain.NewCard(rankA, domain.SuitSpades),
 			domain.NewCard(rankK, domain.SuitHearts),
 		},
+		HoleCards: []domain.SeatCards{
+			{
+				SeatNo: seat2,
+				Cards: []domain.Card{
+					domain.NewCard(rankA, domain.SuitClubs),
+					domain.NewCard(rankK, domain.SuitDiamonds),
+				},
+			},
+		},
 		Seats: []domain.SeatState{
 			{SeatNo: seat1, Stack: 980, CommittedInRound: 20},
 			{SeatNo: seat2, Stack: 900, CommittedInRound: 80},
@@ -301,6 +313,9 @@ func TestHumanProviderPromptIncludesSeatAndBoardInfo(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Board: As Kh -- -- --") {
 		t.Fatalf("expected board cards in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Hole: Ac Kd") {
+		t.Fatalf("expected acting seat hole cards in output, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "D Seat 1") {
 		t.Fatalf("expected dealer marker for seat 1, got %q", rendered)

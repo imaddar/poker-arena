@@ -35,6 +35,25 @@ func TestRenderRunOutputIncludesSectionsAndTimeline(t *testing.T) {
 				FallbackCount: 0,
 				FinalState: domain.HandState{
 					Pot: 0,
+					Board: []domain.Card{
+						mustCard(t, "As"),
+						mustCard(t, "Kd"),
+						mustCard(t, "Qc"),
+						mustCard(t, "Jh"),
+						mustCard(t, "Ts"),
+					},
+					ShowdownAwards: []domain.PotAward{
+						{Amount: 400, Seats: []domain.SeatNo{seat2}, Reason: "main_pot"},
+					},
+					HoleCards: []domain.SeatCards{
+						{
+							SeatNo: seat2,
+							Cards: []domain.Card{
+								mustCard(t, "Ah"),
+								mustCard(t, "Ad"),
+							},
+						},
+					},
 					Seats: []domain.SeatState{
 						{SeatNo: seat1, Stack: 9800},
 						{SeatNo: seat2, Stack: 10200},
@@ -65,10 +84,16 @@ func TestRenderRunOutputIncludesSectionsAndTimeline(t *testing.T) {
 	output := renderRunOutput(report)
 	checks := []string{
 		"=== Poker Arena Local Run ===",
-		"--- Hand 1 Complete ---",
+		"<----- HAND 1 ----->",
 		"action timeline:",
 		"preflop seat2 call",
+		"board: As Kd Qc Jh Ts",
+		"showdown_awards:",
+		"main_pot amount=400 seats=seat2",
+		"showdown_results:",
+		"seat2 won 400 with Straight (hole: Ah Ad) via main_pot",
 		"seat 1: 9800 (-200)",
+		"<----- END HAND 1 ----->",
 		"=== Run Complete ===",
 	}
 	for _, check := range checks {
@@ -120,4 +145,53 @@ func TestWriteRunReportJSONWritesValidSchema(t *testing.T) {
 	if parsed["hands_completed"] != float64(2) {
 		t.Fatalf("expected hands_completed 2, got %v", parsed["hands_completed"])
 	}
+
+	hands, ok := parsed["hands"].([]any)
+	if !ok || len(hands) != 2 {
+		t.Fatalf("expected two hands in JSON payload, got %v", parsed["hands"])
+	}
+}
+
+func mustCard(t *testing.T, value string) domain.Card {
+	t.Helper()
+	if len(value) != 2 {
+		t.Fatalf("invalid card format %q", value)
+	}
+
+	var rank uint8
+	switch value[0] {
+	case 'A':
+		rank = 14
+	case 'K':
+		rank = 13
+	case 'Q':
+		rank = 12
+	case 'J':
+		rank = 11
+	case 'T':
+		rank = 10
+	default:
+		rank = value[0] - '0'
+	}
+
+	r, err := domain.NewRank(rank)
+	if err != nil {
+		t.Fatalf("invalid rank in %q: %v", value, err)
+	}
+
+	var suit domain.Suit
+	switch value[1] {
+	case 'c':
+		suit = domain.SuitClubs
+	case 'd':
+		suit = domain.SuitDiamonds
+	case 'h':
+		suit = domain.SuitHearts
+	case 's':
+		suit = domain.SuitSpades
+	default:
+		t.Fatalf("invalid suit in %q", value)
+	}
+
+	return domain.NewCard(r, suit)
 }
