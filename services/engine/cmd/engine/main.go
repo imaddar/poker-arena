@@ -13,25 +13,21 @@ import (
 func main() {
 	mode := flag.String("mode", "sim", "run mode: sim or play")
 	hands := flag.Int("hands", 0, "number of hands to run (defaults: sim=100, play=1)")
+	players := flag.Int("players", 2, "number of players to seat (2..6)")
 	humanSeatRaw := flag.Int("human-seat", 1, "human-controlled seat number when mode=play")
 	outPath := flag.String("out", "", "optional path to write JSON run report")
 	flag.Parse()
 
 	cfg := domain.DefaultV0TableConfig()
-	seat1, err := domain.NewSeatNo(1, cfg.MaxSeats)
+	seats, err := buildInitialSeats(cfg, *players)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "simulation failed: %v\n", err)
 		os.Exit(1)
 	}
-	seat2, err := domain.NewSeatNo(2, cfg.MaxSeats)
+	buttonSeat, err := domain.NewSeatNo(1, cfg.MaxSeats)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "simulation failed: %v\n", err)
 		os.Exit(1)
-	}
-
-	seats := []domain.SeatState{
-		domain.NewSeatState(seat1, cfg.StartingStack),
-		domain.NewSeatState(seat2, cfg.StartingStack),
 	}
 
 	runHands := *hands
@@ -55,6 +51,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "simulation failed: %v\n", err)
 			os.Exit(1)
 		}
+		if int(humanSeat) > len(seats) {
+			fmt.Fprintf(os.Stderr, "simulation failed: human seat %d is not seated (players=%d)\n", humanSeat, len(seats))
+			os.Exit(1)
+		}
 		provider = seatProvider{
 			humanSeat: humanSeat,
 			human:     newHumanProvider(os.Stdin, os.Stdout),
@@ -71,7 +71,7 @@ func main() {
 			runHands,
 			seats,
 			&humanSeat,
-			seat1,
+			buttonSeat,
 			cfg,
 			provider,
 			&events,
@@ -86,11 +86,27 @@ func main() {
 		runHands,
 		seats,
 		nil,
-		seat1,
+		buttonSeat,
 		cfg,
 		provider,
 		&events,
 	)
+}
+
+func buildInitialSeats(cfg domain.TableConfig, players int) ([]domain.SeatState, error) {
+	if players < 2 || players > int(cfg.MaxSeats) {
+		return nil, fmt.Errorf("players must be in range 2..=%d, got %d", cfg.MaxSeats, players)
+	}
+
+	seats := make([]domain.SeatState, 0, players)
+	for i := 1; i <= players; i++ {
+		seatNo, err := domain.NewSeatNo(uint8(i), cfg.MaxSeats)
+		if err != nil {
+			return nil, err
+		}
+		seats = append(seats, domain.NewSeatState(seatNo, cfg.StartingStack))
+	}
+	return seats, nil
 }
 
 func runWithReport(
