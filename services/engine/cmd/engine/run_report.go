@@ -112,16 +112,20 @@ func buildRunReport(input buildRunReportInput) runReport {
 
 func renderRunOutput(report runReport) string {
 	var b strings.Builder
+	w := 50
 
-	b.WriteString("=== Poker Arena Local Run ===\n")
-	b.WriteString(fmt.Sprintf("mode: %s\n", report.Mode))
-	b.WriteString(fmt.Sprintf("table: %s\n", report.TableID))
+	b.WriteString("\n")
+	b.WriteString("  ╔" + strings.Repeat("═", w) + "╗\n")
+	b.WriteString(fmt.Sprintf("  ║%-*s║\n", w, centerReportText("♠ ♥ ♦ ♣  POKER ARENA  ♣ ♦ ♥ ♠", w)))
+	b.WriteString("  ╠" + strings.Repeat("═", w) + "╣\n")
+	b.WriteString(fmt.Sprintf("  ║  Mode:    %-*s║\n", w-12, report.Mode))
+	b.WriteString(fmt.Sprintf("  ║  Table:   %-*s║\n", w-12, report.TableID))
 	if report.HumanSeat != nil {
-		b.WriteString(fmt.Sprintf("human seat: %d\n", *report.HumanSeat))
+		b.WriteString(fmt.Sprintf("  ║  Human:   Seat %-*d║\n", w-17, *report.HumanSeat))
 	}
-	b.WriteString(fmt.Sprintf("hands: %d\n", report.HandsRequested))
-	b.WriteString(fmt.Sprintf("starting stacks: %s\n", formatStackList(report.StartingSeats)))
-	b.WriteString("============================\n\n")
+	b.WriteString(fmt.Sprintf("  ║  Hands:   %-*d║\n", w-12, report.HandsRequested))
+	b.WriteString(fmt.Sprintf("  ║  Stacks:  %-*s║\n", w-12, formatStackList(report.StartingSeats)))
+	b.WriteString("  ╚" + strings.Repeat("═", w) + "╝\n\n")
 
 	previous := make(map[domain.SeatNo]uint32)
 	for _, seat := range report.StartingSeats {
@@ -139,14 +143,28 @@ func renderRunOutput(report runReport) string {
 
 func renderRunCompletion(report runReport) string {
 	var b strings.Builder
-	b.WriteString("=== Run Complete ===\n")
-	b.WriteString(fmt.Sprintf("hands_completed: %d\n", report.HandsCompleted))
-	b.WriteString(fmt.Sprintf("total_actions: %d\n", report.TotalActions))
-	b.WriteString(fmt.Sprintf("total_fallbacks: %d\n", report.TotalFallbacks))
-	b.WriteString(fmt.Sprintf("final_button: %d\n", report.FinalButton))
-	b.WriteString(fmt.Sprintf("final_stacks: %s\n", formatStackList(report.FinalSeats)))
-	b.WriteString("====================\n")
+	w := 50
+
+	b.WriteString("  ╔" + strings.Repeat("═", w) + "╗\n")
+	b.WriteString(fmt.Sprintf("  ║%-*s║\n", w, centerReportText("✓ RUN COMPLETE", w)))
+	b.WriteString("  ╠" + strings.Repeat("═", w) + "╣\n")
+	b.WriteString(fmt.Sprintf("  ║  Hands Completed:  %-*d║\n", w-22, report.HandsCompleted))
+	b.WriteString(fmt.Sprintf("  ║  Total Actions:    %-*d║\n", w-22, report.TotalActions))
+	b.WriteString(fmt.Sprintf("  ║  Total Fallbacks:  %-*d║\n", w-22, report.TotalFallbacks))
+	b.WriteString(fmt.Sprintf("  ║  Final Button:     Seat %-*d║\n", w-27, report.FinalButton))
+	b.WriteString(fmt.Sprintf("  ║  Final Stacks:     %-*s║\n", w-22, formatStackList(report.FinalSeats)))
+	b.WriteString("  ╚" + strings.Repeat("═", w) + "╝\n")
 	return b.String()
+}
+
+func centerReportText(text string, width int) string {
+	l := len([]rune(text))
+	if l >= width {
+		return text
+	}
+	left := (width - l) / 2
+	right := width - l - left
+	return strings.Repeat(" ", left) + text + strings.Repeat(" ", right)
 }
 
 func writeRunReportJSON(path string, report runReport) error {
@@ -229,51 +247,84 @@ func buildRunReportHand(summary tablerunner.HandSummary, timeline []runReportAct
 
 func renderHandSection(hand runReportHand, previous map[domain.SeatNo]uint32) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("<----- HAND %d ----->\n", hand.HandNo))
-	b.WriteString(fmt.Sprintf("phase: %s\n", hand.Phase))
-	b.WriteString(fmt.Sprintf("actions: %d\n", hand.Actions))
-	b.WriteString(fmt.Sprintf("fallbacks: %d\n", hand.Fallbacks))
-	b.WriteString(fmt.Sprintf("pot_end: %d\n", hand.PotEnd))
-	b.WriteString(fmt.Sprintf("board: %s\n", strings.Join(hand.Board, " ")))
-	b.WriteString("showdown_awards:\n")
+	w := 56
+
+	// Hand header
+	b.WriteString(fmt.Sprintf("  ┌%s┐\n", strings.Repeat("─", w)))
+	b.WriteString(fmt.Sprintf("  │%-*s│\n", w, centerReportText(fmt.Sprintf("♠ HAND %d ♠", hand.HandNo), w)))
+	b.WriteString(fmt.Sprintf("  ├%s┤\n", strings.Repeat("─", w)))
+
+	// Hand info
+	board := strings.Join(hand.Board, " ")
+	if board == "" {
+		board = "(none)"
+	}
+	b.WriteString(fmt.Sprintf("  │  Phase: %-10s  Actions: %-4d Fallbacks: %-*d│\n", hand.Phase, hand.Actions, w-47, hand.Fallbacks))
+	b.WriteString(fmt.Sprintf("  │  Pot: %-12d  Board: %-*s│\n", hand.PotEnd, w-30, board))
+
+	// Awards
+	b.WriteString(fmt.Sprintf("  ├%s┤\n", strings.Repeat("─", w)))
+	b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "  🏆 Showdown Awards"))
 	if len(hand.ShowdownAwards) == 0 {
-		b.WriteString("  (none)\n")
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "    (none)"))
 	}
 	for _, award := range hand.ShowdownAwards {
-		b.WriteString(fmt.Sprintf("  %s amount=%d seats=%s\n", award.Reason, award.Amount, formatSeatNoList(award.Seats)))
+		line := fmt.Sprintf("    • %s → %d to %s", award.Reason, award.Amount, formatSeatNoList(award.Seats))
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, line))
 	}
-	b.WriteString("showdown_results:\n")
+
+	// Showdown results
+	b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "  🏅 Showdown Results"))
 	if len(hand.ShowdownWinners) == 0 {
-		b.WriteString("  (none)\n")
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "    (none)"))
 	}
 	for _, winner := range hand.ShowdownWinners {
-		b.WriteString(fmt.Sprintf(
-			"  seat%d won %d with %s (hole: %s) via %s\n",
+		line := fmt.Sprintf(
+			"    seat%d won %d with %s (hole: %s) via %s",
 			winner.Seat,
 			winner.Won,
 			winner.BestHand,
 			strings.Join(winner.HoleCards, " "),
 			winner.HowWon,
-		))
+		)
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, line))
 	}
-	b.WriteString("stacks:\n")
+
+	// Stacks
+	b.WriteString(fmt.Sprintf("  ├%s┤\n", strings.Repeat("─", w)))
+	b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "  💰 Stacks"))
 	for _, seat := range hand.StacksAfter {
 		delta := int64(seat.Stack) - int64(previous[seat.SeatNo])
-		b.WriteString(fmt.Sprintf("  seat %d: %d (%+d)\n", seat.SeatNo, seat.Stack, delta))
+		deltaStr := fmt.Sprintf("%+d", delta)
+		if delta > 0 {
+			deltaStr = "▲" + deltaStr
+		} else if delta < 0 {
+			deltaStr = "▼" + deltaStr
+		} else {
+			deltaStr = "• " + deltaStr
+		}
+		line := fmt.Sprintf("    Seat %d: %d  %s", seat.SeatNo, seat.Stack, deltaStr)
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, line))
 		previous[seat.SeatNo] = seat.Stack
 	}
-	b.WriteString("action timeline:\n")
-	for idx, action := range hand.Timeline {
-		b.WriteString(fmt.Sprintf("  %d) %s seat%d %s", idx+1, action.Street, action.Seat, action.Action))
-		if action.Amount != nil {
-			b.WriteString(fmt.Sprintf(" %d", *action.Amount))
-		}
-		b.WriteString("\n")
-	}
+
+	// Timeline
+	b.WriteString(fmt.Sprintf("  ├%s┤\n", strings.Repeat("─", w)))
+	b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "  🎬 Action Timeline"))
 	if len(hand.Timeline) == 0 {
-		b.WriteString("  (no actions captured)\n")
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, "    (no actions captured)"))
 	}
-	b.WriteString(fmt.Sprintf("<----- END HAND %d ----->\n\n", hand.HandNo))
+	for idx, action := range hand.Timeline {
+		var line string
+		if action.Amount != nil {
+			line = fmt.Sprintf("    %d) %s seat%d %s %d", idx+1, action.Street, action.Seat, action.Action, *action.Amount)
+		} else {
+			line = fmt.Sprintf("    %d) %s seat%d %s", idx+1, action.Street, action.Seat, action.Action)
+		}
+		b.WriteString(fmt.Sprintf("  │%-*s│\n", w, line))
+	}
+
+	b.WriteString(fmt.Sprintf("  └%s┘\n\n", strings.Repeat("─", w)))
 	return b.String()
 }
 

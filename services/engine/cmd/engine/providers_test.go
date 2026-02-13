@@ -159,7 +159,7 @@ func TestHumanProviderReadsUntilValidAction(t *testing.T) {
 	if !strings.Contains(out.String(), "invalid action") {
 		t.Fatalf("expected invalid action hint in output, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "MINI ASCII POKER TABLE") {
+	if !strings.Contains(out.String(), "POKER TABLE") {
 		t.Fatalf("expected ASCII table header in prompt, got %q", out.String())
 	}
 	if !strings.Contains(out.String(), "Street: flop") {
@@ -311,16 +311,19 @@ func TestHumanProviderPromptIncludesSeatAndBoardInfo(t *testing.T) {
 	if !strings.Contains(rendered, "Table: local-table-1") {
 		t.Fatalf("expected table id in output, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Board: As Kh -- -- --") {
-		t.Fatalf("expected board cards in output, got %q", rendered)
+	if !strings.Contains(rendered, "BOARD: [A♠] [K♥] [--] [--] [--]") {
+		t.Fatalf("expected board cards in table layout, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Hole: Ac Kd") {
+	if !strings.Contains(rendered, "+------------------------------------------------------+") {
+		t.Fatalf("expected table outline in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Hole: A♣ K♦") {
 		t.Fatalf("expected acting seat hole cards in output, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "D Seat 1") {
 		t.Fatalf("expected dealer marker for seat 1, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "> A Seat 2") {
+	if !strings.Contains(rendered, "-> A Seat 2") {
 		t.Fatalf("expected acting marker for seat 2, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "(BTN/SB)") {
@@ -359,6 +362,11 @@ func TestRenderMiniPokerTable_SixMaxShowsNamedPositions(t *testing.T) {
 	for _, position := range []string{"(BTN)", "(SB)", "(BB)", "(UTG)", "(HJ)", "(CO)"} {
 		if !strings.Contains(rendered, position) {
 			t.Fatalf("expected position %s in output, got %q", position, rendered)
+		}
+	}
+	for _, layoutPosition := range []string{"S1(BTN)", "S2(SB)", "S3(BB)", "S4(UTG)", "S5(HJ)", "S6(CO)"} {
+		if !strings.Contains(rendered, layoutPosition) {
+			t.Fatalf("expected layout position %s in output, got %q", layoutPosition, rendered)
 		}
 	}
 }

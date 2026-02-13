@@ -83,18 +83,17 @@ func TestRenderRunOutputIncludesSectionsAndTimeline(t *testing.T) {
 
 	output := renderRunOutput(report)
 	checks := []string{
-		"=== Poker Arena Local Run ===",
-		"<----- HAND 1 ----->",
-		"action timeline:",
+		"POKER ARENA",
+		"♠ HAND 1 ♠",
+		"Action Timeline",
 		"preflop seat2 call",
-		"board: As Kd Qc Jh Ts",
-		"showdown_awards:",
-		"main_pot amount=400 seats=seat2",
-		"showdown_results:",
-		"seat2 won 400 with Straight (hole: Ah Ad) via main_pot",
-		"seat 1: 9800 (-200)",
-		"<----- END HAND 1 ----->",
-		"=== Run Complete ===",
+		"A♠ K♦ Q♣ J♥ T♠",
+		"Showdown Awards",
+		"main_pot → 400 to seat2",
+		"Showdown Results",
+		"seat2 won 400 with Straight (hole: A♥ A♦) via main_pot",
+		"Seat 1: 9800",
+		"✓ RUN COMPLETE",
 	}
 	for _, check := range checks {
 		if !strings.Contains(output, check) {

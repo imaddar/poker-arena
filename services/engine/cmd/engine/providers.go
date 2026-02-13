@@ -341,23 +341,17 @@ func renderMiniPokerTable(state domain.HandState, toCall uint32, options string)
 	positionBySeat := buildPositionBySeat(state)
 
 	lines := []string{
-		"MINI ASCII POKER TABLE",
+		"POKER TABLE",
 		fmt.Sprintf("Hand #%d | Table: %s", state.HandNo, state.TableID),
 		fmt.Sprintf("Street: %s | Pot: %d | To Call: %d", state.Street, state.Pot, toCall),
 		fmt.Sprintf("Current Bet: %d | Min Raise To: %d", state.CurrentBet, state.MinRaiseTo),
-		fmt.Sprintf("Board: %s", formatBoardCards(state.Board)),
 		fmt.Sprintf("Hole: %s", formatHoleCards(state, state.ActingSeat)),
-		"                    .----------------------.",
-		"                   /                        \\",
-		"                  |        TABLE VIEW        |",
-		"                   \\                        /",
-		"                    '----------------------'",
 	}
-
+	lines = append(lines, renderTableLayoutLines(state, positionBySeat)...)
+	lines = append(lines, "Seats:")
 	for i := range state.Seats {
 		lines = append(lines, formatSeatPromptLine(state.Seats[i], state, positionBySeat[state.Seats[i].SeatNo]))
 	}
-
 	lines = append(lines, fmt.Sprintf("Options: %s", options))
 
 	var builder strings.Builder
@@ -378,9 +372,9 @@ func framePromptLine(content string) string {
 }
 
 func formatSeatPromptLine(seat domain.SeatState, state domain.HandState, position string) string {
-	marker := " "
+	marker := "  "
 	if seat.SeatNo == state.ActingSeat {
-		marker = ">"
+		marker = "->"
 	}
 
 	role := "-"
@@ -416,6 +410,63 @@ func formatSeatPromptLine(seat domain.SeatState, state domain.HandState, positio
 		seat.CommittedInRound,
 		status,
 	)
+}
+
+func renderTableLayoutLines(state domain.HandState, positionBySeat map[domain.SeatNo]string) []string {
+	slotByPosition := make(map[string]string, len(positionBySeat))
+	for _, seat := range state.Seats {
+		position, ok := positionBySeat[seat.SeatNo]
+		if !ok {
+			continue
+		}
+		slotByPosition[position] = formatSeatLayoutSlot(seat, state, position)
+	}
+
+	board := formatBoardCards(state.Board)
+	twoCol := func(left string, right string) string {
+		return fmt.Sprintf("| %-26s %-26s |", left, right)
+	}
+
+	if slotByPosition["BTN/SB"] != "" {
+		return []string{
+			"+------------------------------------------------------+",
+			"| TABLE                                                |",
+			twoCol(slotOrDefault(slotByPosition, "BTN/SB"), slotOrDefault(slotByPosition, "BB")),
+			fmt.Sprintf("| BOARD: %-45s |", board),
+			fmt.Sprintf("| POT: %-47d |", state.Pot),
+			"+------------------------------------------------------+",
+		}
+	}
+
+	return []string{
+		"+------------------------------------------------------+",
+		"| TABLE                                                |",
+		fmt.Sprintf("| %-52s |", slotOrDefault(slotByPosition, "UTG")),
+		twoCol(slotOrDefault(slotByPosition, "HJ"), slotOrDefault(slotByPosition, "CO")),
+		fmt.Sprintf("| BOARD: %-45s |", board),
+		fmt.Sprintf("| POT: %-47d |", state.Pot),
+		twoCol(slotOrDefault(slotByPosition, "SB"), slotOrDefault(slotByPosition, "BB")),
+		fmt.Sprintf("| %-52s |", slotOrDefault(slotByPosition, "BTN")),
+		"+------------------------------------------------------+",
+	}
+}
+
+func formatSeatLayoutSlot(seat domain.SeatState, state domain.HandState, position string) string {
+	marker := ""
+	if seat.SeatNo == state.ActingSeat {
+		marker += "*"
+	}
+	if seat.SeatNo == state.ButtonSeat {
+		marker += "D"
+	}
+	return fmt.Sprintf("S%d(%s)%s", seat.SeatNo, position, marker)
+}
+
+func slotOrDefault(slotByPosition map[string]string, position string) string {
+	if slotByPosition[position] == "" {
+		return position + ":--"
+	}
+	return slotByPosition[position]
 }
 
 func buildPositionBySeat(state domain.HandState) map[domain.SeatNo]string {
@@ -484,10 +535,10 @@ func formatBoardCards(board []domain.Card) string {
 	formatted := make([]string, 0, 5)
 	for i := 0; i < 5; i++ {
 		if i < len(board) {
-			formatted = append(formatted, formatCard(board[i]))
+			formatted = append(formatted, "["+formatCard(board[i])+"]")
 			continue
 		}
-		formatted = append(formatted, "--")
+		formatted = append(formatted, "[--]")
 	}
 	return strings.Join(formatted, " ")
 }
@@ -529,13 +580,13 @@ func formatRank(rank domain.Rank) string {
 func formatSuit(suit domain.Suit) string {
 	switch suit {
 	case domain.SuitClubs:
-		return "c"
+		return "♣"
 	case domain.SuitDiamonds:
-		return "d"
+		return "♦"
 	case domain.SuitHearts:
-		return "h"
+		return "♥"
 	case domain.SuitSpades:
-		return "s"
+		return "♠"
 	default:
 		return "?"
 	}
