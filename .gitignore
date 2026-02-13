@@ -1,6 +1,7 @@
 # Compiled output
 /target/
 **/target/
+/services/engine/engine
 
 # Node / TS
 node_modules/
