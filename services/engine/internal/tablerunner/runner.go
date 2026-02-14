@@ -35,6 +35,8 @@ type RunHandInput struct {
 type RunnerConfig struct {
 	MaxActionsPerHand int
 	OnHandComplete    func(HandSummary)
+	OnHandStart       func(input RunHandInput, initial domain.HandState)
+	OnAction          func(handNo uint64, state domain.HandState, action domain.Action, isFallback bool)
 }
 
 type Runner struct {
@@ -183,6 +185,9 @@ func (r Runner) RunHand(ctx context.Context, input RunHandInput) (RunHandResult,
 	if err != nil {
 		return result, err
 	}
+	if r.config.OnHandStart != nil {
+		r.config.OnHandStart(input, cloneHandState(state))
+	}
 	result.FinalState = state
 
 	for {
@@ -211,10 +216,15 @@ func (r Runner) RunHand(ctx context.Context, input RunHandInput) (RunHandResult,
 				return result, err
 			}
 
-			state, err = r.applyFallback(state)
+			callbackState := cloneHandState(state)
+			var fallbackAction domain.Action
+			state, fallbackAction, err = r.applyFallback(state)
 			if err != nil {
 				result.FinalState = state
 				return result, fmt.Errorf("apply fallback after provider error: %w", err)
+			}
+			if r.config.OnAction != nil {
+				r.config.OnAction(input.HandNo, callbackState, fallbackAction, true)
 			}
 
 			result.ActionCount++
@@ -239,10 +249,15 @@ func (r Runner) RunHand(ctx context.Context, input RunHandInput) (RunHandResult,
 				return result, err
 			}
 
-			state, err = r.applyFallback(state)
+			callbackState := cloneHandState(state)
+			var fallbackAction domain.Action
+			state, fallbackAction, err = r.applyFallback(state)
 			if err != nil {
 				result.FinalState = state
 				return result, fmt.Errorf("apply fallback after illegal action: %w", err)
+			}
+			if r.config.OnAction != nil {
+				r.config.OnAction(input.HandNo, callbackState, fallbackAction, true)
 			}
 
 			result.ActionCount++
@@ -255,7 +270,11 @@ func (r Runner) RunHand(ctx context.Context, input RunHandInput) (RunHandResult,
 			continue
 		}
 
+		callbackState := cloneHandState(state)
 		state = nextState
+		if r.config.OnAction != nil {
+			r.config.OnAction(input.HandNo, callbackState, action, false)
+		}
 		result.ActionCount++
 		result.FinalState = state
 
@@ -265,20 +284,20 @@ func (r Runner) RunHand(ctx context.Context, input RunHandInput) (RunHandResult,
 	}
 }
 
-func (r Runner) applyFallback(state domain.HandState) (domain.HandState, error) {
+func (r Runner) applyFallback(state domain.HandState) (domain.HandState, domain.Action, error) {
 	checkAction := fallbackActionCheck()
 	nextState, err := statemachine.ApplyAction(state, checkAction)
 	if err == nil {
-		return nextState, nil
+		return nextState, checkAction, nil
 	}
 
 	foldAction := fallbackActionFold()
 	nextState, foldErr := statemachine.ApplyAction(state, foldAction)
 	if foldErr != nil {
-		return state, fmt.Errorf("fallback check failed (%v) and fallback fold failed (%w)", err, foldErr)
+		return state, domain.Action{}, fmt.Errorf("fallback check failed (%v) and fallback fold failed (%w)", err, foldErr)
 	}
 
-	return nextState, nil
+	return nextState, foldAction, nil
 }
 
 func fallbackActionCheck() domain.Action {
