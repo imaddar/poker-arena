@@ -54,6 +54,36 @@ func TestStartNewHandInitializesPreflopAndBlinds(t *testing.T) {
 	}
 }
 
+func TestStartNewHandHeadsUpUsesButtonAsSmallBlindAndFirstToActPreflop(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	button := mustSeatNo(t, cfg, 1)
+	bigBlind := mustSeatNo(t, cfg, 2)
+	state, err := StartNewHand(StartNewHandInput{
+		TableID:    "table-1",
+		HandNo:     1,
+		Seats:      mustSeats(t, cfg, 1, 2),
+		ButtonSeat: button,
+		Config:     cfg,
+	})
+	if err != nil {
+		t.Fatalf("StartNewHand failed: %v", err)
+	}
+
+	buttonSeat := findSeat(t, state, button)
+	bbSeat := findSeat(t, state, bigBlind)
+	if buttonSeat.CommittedInRound != cfg.SmallBlind {
+		t.Fatalf("expected button seat %d to post small blind %d, got %d", button, cfg.SmallBlind, buttonSeat.CommittedInRound)
+	}
+	if bbSeat.CommittedInRound != cfg.BigBlind {
+		t.Fatalf("expected seat %d to post big blind %d, got %d", bigBlind, cfg.BigBlind, bbSeat.CommittedInRound)
+	}
+	if state.ActingSeat != button {
+		t.Fatalf("expected button seat %d to act first preflop in heads-up, got %d", button, state.ActingSeat)
+	}
+}
+
 func TestStartNewHandDealsTwoCardsPerActiveSeatWithNoDuplicates(t *testing.T) {
 	t.Parallel()
 

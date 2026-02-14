@@ -31,18 +31,41 @@ func StartNewHand(input StartNewHandInput) (domain.HandState, error) {
 	seats := append([]domain.SeatState(nil), input.Seats...)
 	sortSeats(seats)
 
-	if countNonFoldedActiveSeats(seats) == 0 {
+	activeSeats := countNonFoldedActiveSeats(seats)
+	if activeSeats == 0 {
 		return domain.HandState{}, ErrNoActiveSeats
 	}
 
-	sbSeat, ok := nextSeat(seats, input.ButtonSeat, false, isActiveSeat)
-	if !ok {
-		return domain.HandState{}, ErrNoActiveSeats
+	var (
+		sbSeat domain.SeatNo
+		bbSeat domain.SeatNo
+		ok     bool
+	)
+	if activeSeats == 2 {
+		buttonIdx := seatIndex(seats, input.ButtonSeat)
+		if buttonIdx >= 0 && isActiveSeat(seats[buttonIdx]) {
+			sbSeat = input.ButtonSeat
+		} else {
+			sbSeat, ok = nextSeat(seats, input.ButtonSeat, false, isActiveSeat)
+			if !ok {
+				return domain.HandState{}, ErrNoActiveSeats
+			}
+		}
+		bbSeat, ok = nextSeat(seats, sbSeat, false, isActiveSeat)
+		if !ok {
+			return domain.HandState{}, ErrNoActiveSeats
+		}
+	} else {
+		sbSeat, ok = nextSeat(seats, input.ButtonSeat, false, isActiveSeat)
+		if !ok {
+			return domain.HandState{}, ErrNoActiveSeats
+		}
+		bbSeat, ok = nextSeat(seats, sbSeat, false, isActiveSeat)
+		if !ok {
+			return domain.HandState{}, ErrNoActiveSeats
+		}
 	}
-	bbSeat, ok := nextSeat(seats, sbSeat, false, isActiveSeat)
-	if !ok {
-		return domain.HandState{}, ErrNoActiveSeats
-	}
+
 	actingSeat, ok := nextSeat(seats, bbSeat, false, isEligibleToAct)
 	if !ok {
 		// If every active seat is all-in after blinds there is no one to act.

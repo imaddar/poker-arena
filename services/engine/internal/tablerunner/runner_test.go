@@ -95,6 +95,134 @@ func TestRunHand_UsesFallbackWhenProviderReturnsIllegalAction(t *testing.T) {
 	}
 }
 
+func TestRunHand_InvokesOnHandStartOnce(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	callCount := 0
+	var gotInput RunHandInput
+	var gotInitial domain.HandState
+
+	runner := New(newScriptedProvider(
+		actionCall(t),
+		actionCheck(t),
+		actionCheck(t),
+		actionCheck(t),
+		actionCheck(t),
+		actionCheck(t),
+		actionCheck(t),
+		actionCheck(t),
+	), RunnerConfig{
+		OnHandStart: func(input RunHandInput, initial domain.HandState) {
+			callCount++
+			gotInput = input
+			gotInitial = initial
+		},
+	})
+
+	input := RunHandInput{
+		TableID:    "table-1",
+		HandNo:     7,
+		ButtonSeat: mustSeatNo(t, cfg, 1),
+		Seats:      activeSeats(t, cfg, 1, 2),
+		Config:     cfg,
+	}
+	_, err := runner.RunHand(context.Background(), input)
+	if err != nil {
+		t.Fatalf("RunHand failed: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Fatalf("expected OnHandStart to be called once, got %d", callCount)
+	}
+	if gotInput.HandNo != input.HandNo {
+		t.Fatalf("expected hand no %d, got %d", input.HandNo, gotInput.HandNo)
+	}
+	if gotInitial.Phase != domain.HandPhaseBetting {
+		t.Fatalf("expected initial phase %q, got %q", domain.HandPhaseBetting, gotInitial.Phase)
+	}
+}
+
+func TestRunHand_InvokesOnActionForNormalActions(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	actionCalls := 0
+	fallbackCalls := 0
+
+	runner := New(newScriptedProvider(actionCall(t), actionFold(t)), RunnerConfig{
+		OnAction: func(_ uint64, _ domain.HandState, _ domain.Action, isFallback bool) {
+			if isFallback {
+				fallbackCalls++
+				return
+			}
+			actionCalls++
+		},
+	})
+
+	_, err := runner.RunHand(context.Background(), RunHandInput{
+		TableID:    "table-1",
+		HandNo:     1,
+		ButtonSeat: mustSeatNo(t, cfg, 1),
+		Seats:      activeSeats(t, cfg, 1, 2),
+		Config:     cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunHand failed: %v", err)
+	}
+
+	if actionCalls != 2 {
+		t.Fatalf("expected 2 normal action callbacks, got %d", actionCalls)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("expected no fallback callbacks, got %d", fallbackCalls)
+	}
+}
+
+func TestRunHand_InvokesOnActionForFallbackActions(t *testing.T) {
+	t.Parallel()
+
+	cfg := domain.DefaultV0TableConfig()
+	actionCalls := 0
+	fallbackCalls := 0
+	var fallbackAction domain.Action
+
+	runner := New(newScriptedProvider(scriptedStep{err: errors.New("provider failed")}), RunnerConfig{
+		OnAction: func(_ uint64, _ domain.HandState, action domain.Action, isFallback bool) {
+			if isFallback {
+				fallbackCalls++
+				fallbackAction = action
+				return
+			}
+			actionCalls++
+		},
+	})
+
+	result, err := runner.RunHand(context.Background(), RunHandInput{
+		TableID:    "table-1",
+		HandNo:     1,
+		ButtonSeat: mustSeatNo(t, cfg, 1),
+		Seats:      activeSeats(t, cfg, 1, 2),
+		Config:     cfg,
+	})
+	if err != nil {
+		t.Fatalf("RunHand failed: %v", err)
+	}
+
+	if result.FallbackCount == 0 {
+		t.Fatal("expected fallback count > 0")
+	}
+	if actionCalls != 0 {
+		t.Fatalf("expected no normal callbacks, got %d", actionCalls)
+	}
+	if fallbackCalls != 1 {
+		t.Fatalf("expected exactly one fallback callback, got %d", fallbackCalls)
+	}
+	if fallbackAction.Kind != domain.ActionFold && fallbackAction.Kind != domain.ActionCheck {
+		t.Fatalf("expected fallback check/fold action, got %s", fallbackAction.Kind)
+	}
+}
+
 func TestRunHand_StopsOnActionLimit(t *testing.T) {
 	t.Parallel()
 
@@ -291,7 +419,7 @@ func TestRunTable_StopsWhenTooFewActiveSeats(t *testing.T) {
 
 	cfg := domain.DefaultV0TableConfig()
 	seats := activeSeats(t, cfg, 1, 2)
-	seats[0].Stack = 50
+	seats[1].Status = domain.SeatStatusSittingOut
 
 	runner := New(newScriptedProvider(), RunnerConfig{})
 	_, err := runner.RunTable(context.Background(), RunTableInput{
@@ -502,6 +630,12 @@ func actionCall(t *testing.T) scriptedStep {
 func actionCheck(t *testing.T) scriptedStep {
 	t.Helper()
 	a := mustAction(t, domain.ActionCheck, nil)
+	return scriptedStep{action: a}
+}
+
+func actionFold(t *testing.T) scriptedStep {
+	t.Helper()
+	a := mustAction(t, domain.ActionFold, nil)
 	return scriptedStep{action: a}
 }
 
