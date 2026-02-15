@@ -19,7 +19,7 @@ import (
 // TODO(auth): Add bearer-token middleware and align endpoint auth with the broader service model.
 // TODO(logging): Add structured run/request lifecycle logging and persistence error telemetry.
 
-type runnerLike interface {
+type Runner interface {
 	RunTable(ctx context.Context, input tablerunner.RunTableInput) (tablerunner.RunTableResult, error)
 }
 
@@ -31,7 +31,7 @@ type tableRun struct {
 
 type Server struct {
 	repo            persistence.Repository
-	runnerFactory   func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) runnerLike
+	runnerFactory   func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner
 	providerFactory func(tableID string) (tablerunner.ActionProvider, error)
 
 	mu   sync.Mutex
@@ -58,9 +58,29 @@ type tableStatusResponse struct {
 	ActionsPersisted int `json:"actions_persisted"`
 }
 
+type handResponse struct {
+	HandID        string            `json:"hand_id"`
+	TableID       string            `json:"table_id"`
+	HandNo        uint64            `json:"hand_no"`
+	StartedAt     time.Time         `json:"started_at"`
+	EndedAt       *time.Time        `json:"ended_at,omitempty"`
+	FinalPhase    domain.HandPhase  `json:"final_phase"`
+	WinnerSummary []domain.PotAward `json:"winner_summary,omitempty"`
+}
+
+type actionResponse struct {
+	HandID     string            `json:"hand_id"`
+	Street     domain.Street     `json:"street"`
+	ActingSeat domain.SeatNo     `json:"acting_seat"`
+	Action     domain.ActionKind `json:"action"`
+	Amount     *uint32           `json:"amount,omitempty"`
+	IsFallback bool              `json:"is_fallback"`
+	At         time.Time         `json:"at"`
+}
+
 func NewServer(
 	repo persistence.Repository,
-	runnerFactory func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) runnerLike,
+	runnerFactory func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner,
 	providerFactory func(tableID string) (tablerunner.ActionProvider, error),
 ) *Server {
 	return &Server{
@@ -72,22 +92,33 @@ func NewServer(
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	tableID, action, ok := parseTableRoute(r.URL.Path)
-	if !ok {
-		writeError(w, http.StatusNotFound, "route not found")
+	if tableID, action, ok := parseTableRoute(r.URL.Path); ok {
+		switch {
+		case r.Method == http.MethodPost && action == "start":
+			s.handleStart(w, r, tableID)
+		case r.Method == http.MethodPost && action == "stop":
+			s.handleStop(w, tableID)
+		case r.Method == http.MethodGet && action == "status":
+			s.handleStatus(w, tableID)
+		case r.Method == http.MethodGet && action == "hands":
+			s.handleHands(w, tableID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 
-	switch {
-	case r.Method == http.MethodPost && action == "start":
-		s.handleStart(w, r, tableID)
-	case r.Method == http.MethodPost && action == "stop":
-		s.handleStop(w, tableID)
-	case r.Method == http.MethodGet && action == "status":
-		s.handleStatus(w, tableID)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	if handID, action, ok := parseHandRoute(r.URL.Path); ok {
+		switch {
+		case r.Method == http.MethodGet && action == "actions":
+			s.handleActions(w, handID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
 	}
+
+	writeError(w, http.StatusNotFound, "route not found")
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID string) {
@@ -287,7 +318,61 @@ func (s *Server) handleStatus(w http.ResponseWriter, tableID string) {
 	})
 }
 
-func (s *Server) runTable(ctx context.Context, tableID string, run *tableRun, runner runnerLike, input tablerunner.RunTableInput) {
+func (s *Server) handleHands(w http.ResponseWriter, tableID string) {
+	hands, err := s.repo.ListHands(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load hands")
+		return
+	}
+	if len(hands) == 0 {
+		_, ok, getErr := s.repo.GetTableRun(tableID)
+		if getErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load table status")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "table status not found")
+			return
+		}
+	}
+
+	response := make([]handResponse, 0, len(hands))
+	for _, hand := range hands {
+		response = append(response, handResponse{
+			HandID:        hand.HandID,
+			TableID:       hand.TableID,
+			HandNo:        hand.HandNo,
+			StartedAt:     hand.StartedAt,
+			EndedAt:       hand.EndedAt,
+			FinalPhase:    hand.FinalPhase,
+			WinnerSummary: append([]domain.PotAward(nil), hand.WinnerSummary...),
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleActions(w http.ResponseWriter, handID string) {
+	actions, err := s.repo.ListActions(handID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load actions")
+		return
+	}
+	response := make([]actionResponse, 0, len(actions))
+	for _, action := range actions {
+		response = append(response, actionResponse{
+			HandID:     action.HandID,
+			Street:     action.Street,
+			ActingSeat: action.ActingSeat,
+			Action:     action.Action,
+			Amount:     action.Amount,
+			IsFallback: action.IsFallback,
+			At:         action.At,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) runTable(ctx context.Context, tableID string, run *tableRun, runner Runner, input tablerunner.RunTableInput) {
 	defer func() {
 		close(run.done)
 		s.mu.Lock()
@@ -403,6 +488,17 @@ func validateStartRequest(tableID string, req StartRequest) (tablerunner.RunTabl
 func parseTableRoute(path string) (tableID string, action string, ok bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 3 || parts[0] != "tables" {
+		return "", "", false
+	}
+	if parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+func parseHandRoute(path string) (handID string, action string, ok bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 3 || parts[0] != "hands" {
 		return "", "", false
 	}
 	if parts[1] == "" || parts[2] == "" {

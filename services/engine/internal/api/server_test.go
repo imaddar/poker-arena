@@ -15,13 +15,142 @@ import (
 	"github.com/imaddar/poker-arena/services/engine/internal/tablerunner"
 )
 
+func TestGetHands_ReturnsPersistedHandsForTable(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:     "hand-2",
+		TableID:    "table-1",
+		HandNo:     2,
+		StartedAt:  now.Add(-30 * time.Second),
+		FinalPhase: domain.HandPhaseComplete,
+	}); err != nil {
+		t.Fatalf("CreateHand hand-2 failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:     "hand-1",
+		TableID:    "table-1",
+		HandNo:     1,
+		StartedAt:  now.Add(-45 * time.Second),
+		FinalPhase: domain.HandPhaseComplete,
+	}); err != nil {
+		t.Fatalf("CreateHand hand-1 failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:     "hand-other",
+		TableID:    "table-2",
+		HandNo:     1,
+		StartedAt:  now.Add(-45 * time.Second),
+		FinalPhase: domain.HandPhaseComplete,
+	}); err != nil {
+		t.Fatalf("CreateHand hand-other failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var hands []handResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &hands); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(hands) != 2 {
+		t.Fatalf("expected 2 hands, got %d", len(hands))
+	}
+	if hands[0].HandID != "hand-1" || hands[1].HandID != "hand-2" {
+		t.Fatalf("expected sorted hand IDs [hand-1 hand-2], got [%s %s]", hands[0].HandID, hands[1].HandID)
+	}
+}
+
+func TestGetHands_UnknownTableReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/tables/missing/hands", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestGetActions_ReturnsPersistedActionsForHand(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-1",
+		Street:     domain.StreetPreflop,
+		ActingSeat: 1,
+		Action:     domain.ActionCall,
+		At:         now,
+	}); err != nil {
+		t.Fatalf("AppendAction failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-1",
+		Street:     domain.StreetFlop,
+		ActingSeat: 2,
+		Action:     domain.ActionCheck,
+		At:         now.Add(1 * time.Second),
+	}); err != nil {
+		t.Fatalf("AppendAction failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-2",
+		Street:     domain.StreetPreflop,
+		ActingSeat: 1,
+		Action:     domain.ActionFold,
+		At:         now,
+	}); err != nil {
+		t.Fatalf("AppendAction failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/actions", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var actions []actionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &actions); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(actions) != 2 {
+		t.Fatalf("expected 2 actions, got %d", len(actions))
+	}
+	if actions[0].Action != domain.ActionCall || actions[1].Action != domain.ActionCheck {
+		t.Fatalf("unexpected action sequence: %+v", actions)
+	}
+}
+
 func TestStartRunPersistsHandStartedAtIndependentlyFromRunStartedAt(t *testing.T) {
 	t.Parallel()
 
 	repo := persistence.NewInMemoryRepository()
 	server := NewServer(
 		repo,
-		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) runnerLike {
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner {
 			return fakeRunner{cfg: cfg}
 		},
 		func(tableID string) (tablerunner.ActionProvider, error) {
