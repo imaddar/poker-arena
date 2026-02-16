@@ -95,6 +95,18 @@ type actionResponse struct {
 	At         time.Time         `json:"at"`
 }
 
+type handReplayResponse struct {
+	HandID        string            `json:"hand_id"`
+	TableID       string            `json:"table_id"`
+	HandNo        uint64            `json:"hand_no"`
+	StartedAt     time.Time         `json:"started_at"`
+	EndedAt       *time.Time        `json:"ended_at,omitempty"`
+	FinalPhase    domain.HandPhase  `json:"final_phase"`
+	WinnerSummary []domain.PotAward `json:"winner_summary,omitempty"`
+	FinalState    domain.HandState  `json:"final_state"`
+	Actions       []actionResponse  `json:"actions"`
+}
+
 func NewServer(
 	repo persistence.Repository,
 	runnerFactory func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner,
@@ -136,6 +148,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && action == "actions":
 			s.handleActions(w, handID)
+		case r.Method == http.MethodGet && action == "replay":
+			s.handleReplay(w, handID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -417,6 +431,48 @@ func (s *Server) handleActions(w http.ResponseWriter, handID string) {
 		})
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleReplay(w http.ResponseWriter, handID string) {
+	hand, ok, err := s.repo.GetHand(handID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load hand")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "hand not found")
+		return
+	}
+
+	actions, err := s.repo.ListActions(handID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load actions")
+		return
+	}
+	actionItems := make([]actionResponse, 0, len(actions))
+	for _, action := range actions {
+		actionItems = append(actionItems, actionResponse{
+			HandID:     action.HandID,
+			Street:     action.Street,
+			ActingSeat: action.ActingSeat,
+			Action:     action.Action,
+			Amount:     action.Amount,
+			IsFallback: action.IsFallback,
+			At:         action.At,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, handReplayResponse{
+		HandID:        hand.HandID,
+		TableID:       hand.TableID,
+		HandNo:        hand.HandNo,
+		StartedAt:     hand.StartedAt,
+		EndedAt:       hand.EndedAt,
+		FinalPhase:    hand.FinalPhase,
+		WinnerSummary: append([]domain.PotAward(nil), hand.WinnerSummary...),
+		FinalState:    hand.FinalState,
+		Actions:       actionItems,
+	})
 }
 
 func (s *Server) runTable(ctx context.Context, tableID string, run *tableRun, runner Runner, input tablerunner.RunTableInput) {

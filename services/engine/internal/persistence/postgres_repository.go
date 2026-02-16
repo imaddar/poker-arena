@@ -111,6 +111,46 @@ INSERT INTO hands (
 	return err
 }
 
+func (r *postgresRepository) GetHand(handID string) (HandRecord, bool, error) {
+	const q = `
+SELECT hand_id, table_id, hand_no, started_at, ended_at, final_phase, final_state, winner_summary
+FROM hands
+WHERE hand_id = $1
+`
+	var rec HandRecord
+	var finalPhase string
+	var finalStateRaw []byte
+	var winnerSummaryRaw []byte
+	err := r.db.QueryRowContext(context.Background(), q, handID).Scan(
+		&rec.HandID,
+		&rec.TableID,
+		&rec.HandNo,
+		&rec.StartedAt,
+		&rec.EndedAt,
+		&finalPhase,
+		&finalStateRaw,
+		&winnerSummaryRaw,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HandRecord{}, false, nil
+	}
+	if err != nil {
+		return HandRecord{}, false, err
+	}
+	rec.FinalPhase = domain.HandPhase(finalPhase)
+	if len(finalStateRaw) > 0 {
+		if err := json.Unmarshal(finalStateRaw, &rec.FinalState); err != nil {
+			return HandRecord{}, false, fmt.Errorf("unmarshal final_state for hand %s: %w", rec.HandID, err)
+		}
+	}
+	if len(winnerSummaryRaw) > 0 {
+		if err := json.Unmarshal(winnerSummaryRaw, &rec.WinnerSummary); err != nil {
+			return HandRecord{}, false, fmt.Errorf("unmarshal winner_summary for hand %s: %w", rec.HandID, err)
+		}
+	}
+	return rec, true, nil
+}
+
 func (r *postgresRepository) CompleteHand(handID string, final HandRecord) error {
 	finalState, err := json.Marshal(final.FinalState)
 	if err != nil {

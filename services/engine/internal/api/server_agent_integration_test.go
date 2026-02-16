@@ -71,6 +71,14 @@ func TestAgentRun_CompletesAndPersistsHistory(t *testing.T) {
 			}
 		}
 	}
+
+	replay := getReplay(t, server, token, hands[0].HandID)
+	if len(replay.Actions) == 0 {
+		t.Fatalf("expected replay actions for hand %s", hands[0].HandID)
+	}
+	if replay.FinalState.HandID != hands[0].HandID {
+		t.Fatalf("expected replay final_state.hand_id %q, got %q", hands[0].HandID, replay.FinalState.HandID)
+	}
 }
 
 func TestAgentRun_TimeoutTriggersFallbackAndPersistsIt(t *testing.T) {
@@ -311,6 +319,24 @@ func listActions(t *testing.T, server *Server, token string, handID string) []ac
 		t.Fatalf("decode actions failed: %v", err)
 	}
 	return actions
+}
+
+func getReplay(t *testing.T, server *Server, token string, handID string) handReplayResponse {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/hands/"+handID+"/replay", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("replay request failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var replay handReplayResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay failed: %v", err)
+	}
+	return replay
 }
 
 func mustHost(t *testing.T, rawURL string) string {

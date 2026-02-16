@@ -173,6 +173,10 @@ sleep 1
 
 # copy first hand_id from the hands output and query actions
 ./scripts/api-local.sh actions <hand_id>
+
+# fetch full replay payload for the same hand
+curl -sS "${BASE_URL}/hands/<hand_id>/replay" \
+  -H "Authorization: Bearer ${API_TOKEN}"
 ```
 
 Expected outcome:

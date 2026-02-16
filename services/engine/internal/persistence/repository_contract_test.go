@@ -130,6 +130,44 @@ func runRepositoryContractTests(t *testing.T, mkRepo func(t *testing.T) Reposito
 		}
 	})
 
+	t.Run("Contract_GetHandRoundTrip", func(t *testing.T) {
+		repo := mkRepo(t)
+		started := time.Now().UTC()
+		ensureTableRunForContract(t, repo, "t1")
+
+		record := HandRecord{
+			HandID:     "roundtrip-h1",
+			TableID:    "t1",
+			HandNo:     7,
+			StartedAt:  started,
+			FinalPhase: domain.HandPhaseComplete,
+			FinalState: domain.HandState{
+				HandID: "roundtrip-h1", TableID: "t1", HandNo: 7, Phase: domain.HandPhaseComplete,
+			},
+			WinnerSummary: []domain.PotAward{{Amount: 300, Seats: []domain.SeatNo{1}, Reason: "showdown"}},
+		}
+		if err := repo.CreateHand(record); err != nil {
+			t.Fatalf("CreateHand failed: %v", err)
+		}
+
+		got, ok, err := repo.GetHand("roundtrip-h1")
+		if err != nil {
+			t.Fatalf("GetHand failed: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected hand to be found")
+		}
+		if got.HandID != record.HandID || got.TableID != record.TableID || got.HandNo != record.HandNo {
+			t.Fatalf("unexpected hand metadata: %+v", got)
+		}
+		if got.FinalState.HandID != record.FinalState.HandID {
+			t.Fatalf("expected final state hand id %q, got %q", record.FinalState.HandID, got.FinalState.HandID)
+		}
+		if len(got.WinnerSummary) != 1 || got.WinnerSummary[0].Amount != 300 {
+			t.Fatalf("unexpected winner summary: %+v", got.WinnerSummary)
+		}
+	})
+
 	t.Run("Contract_UpsertAndGetTableRun", func(t *testing.T) {
 		repo := mkRepo(t)
 		started := time.Now().UTC()

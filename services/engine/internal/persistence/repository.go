@@ -62,6 +62,7 @@ type TableRunRecord struct {
 type Repository interface {
 	UpsertTableRun(record TableRunRecord) error
 	GetTableRun(tableID string) (TableRunRecord, bool, error)
+	GetHand(handID string) (HandRecord, bool, error)
 	CreateHand(record HandRecord) error
 	CompleteHand(handID string, final HandRecord) error
 	AppendAction(record ActionRecord) error
@@ -110,6 +111,16 @@ func (r *inMemoryRepository) CreateHand(record HandRecord) error {
 	}
 	r.hands[record.HandID] = cloneHandRecord(record)
 	return nil
+}
+
+func (r *inMemoryRepository) GetHand(handID string) (HandRecord, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.hands[handID]
+	if !ok {
+		return HandRecord{}, false, nil
+	}
+	return cloneHandRecord(record), true, nil
 }
 
 func (r *inMemoryRepository) CompleteHand(handID string, final HandRecord) error {

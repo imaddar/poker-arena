@@ -152,6 +152,108 @@ func TestGetActions_ReturnsPersistedActionsForHand(t *testing.T) {
 	}
 }
 
+func TestGetReplay_ReturnsHandAndOrderedActions(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:        "table-1",
+		Status:         persistence.TableRunStatusCompleted,
+		StartedAt:      now.Add(-2 * time.Minute),
+		HandsRequested: 1,
+		HandsCompleted: 1,
+		CurrentHandNo:  1,
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:     "hand-1",
+		TableID:    "table-1",
+		HandNo:     1,
+		StartedAt:  now.Add(-time.Minute),
+		FinalPhase: domain.HandPhaseComplete,
+		FinalState: domain.HandState{
+			HandID: "hand-1", TableID: "table-1", HandNo: 1, Phase: domain.HandPhaseComplete,
+		},
+		WinnerSummary: []domain.PotAward{{Amount: 100, Seats: []domain.SeatNo{1}, Reason: "showdown"}},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-1",
+		Street:     domain.StreetPreflop,
+		ActingSeat: 1,
+		Action:     domain.ActionCall,
+		At:         now,
+	}); err != nil {
+		t.Fatalf("AppendAction #1 failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-1",
+		Street:     domain.StreetFlop,
+		ActingSeat: 2,
+		Action:     domain.ActionCheck,
+		At:         now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("AppendAction #2 failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var replay handReplayResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay failed: %v", err)
+	}
+	if replay.HandID != "hand-1" || replay.TableID != "table-1" || replay.HandNo != 1 {
+		t.Fatalf("unexpected replay metadata: %+v", replay)
+	}
+	if len(replay.WinnerSummary) != 1 || replay.WinnerSummary[0].Amount != 100 {
+		t.Fatalf("unexpected winner summary: %+v", replay.WinnerSummary)
+	}
+	if replay.FinalState.HandID != "hand-1" {
+		t.Fatalf("expected final state hand id hand-1, got %q", replay.FinalState.HandID)
+	}
+	if len(replay.Actions) != 2 {
+		t.Fatalf("expected 2 replay actions, got %d", len(replay.Actions))
+	}
+	if replay.Actions[0].Action != domain.ActionCall || replay.Actions[1].Action != domain.ActionCheck {
+		t.Fatalf("expected ordered actions [call,check], got [%s,%s]", replay.Actions[0].Action, replay.Actions[1].Action)
+	}
+}
+
+func TestGetReplay_UnknownHandReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/hands/missing/replay", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestGetReplay_RequiresAuth(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+}
+
 func TestStartRunPersistsHandStartedAtIndependentlyFromRunStartedAt(t *testing.T) {
 	t.Parallel()
 
