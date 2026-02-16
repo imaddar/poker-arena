@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,13 @@ type Runner interface {
 	RunTable(ctx context.Context, input tablerunner.RunTableInput) (tablerunner.RunTableResult, error)
 }
 
+type ServerConfig struct {
+	AuthBearerToken       string
+	AllowedAgentHosts     map[string]struct{}
+	DefaultAgentTimeoutMS uint64
+	AgentHTTPTimeout      time.Duration
+}
+
 type tableRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -32,24 +40,27 @@ type tableRun struct {
 type Server struct {
 	repo            persistence.Repository
 	runnerFactory   func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner
-	providerFactory func(tableID string) (tablerunner.ActionProvider, error)
+	providerFactory func(tableID string, start StartRequest, cfg ServerConfig) (tablerunner.ActionProvider, error)
+	config          ServerConfig
 
 	mu   sync.Mutex
 	runs map[string]*tableRun
 }
 
 type StartRequest struct {
-	HandsToRun   int               `json:"hands_to_run"`
-	StartingHand *uint64           `json:"starting_hand,omitempty"`
-	ButtonSeat   *uint8            `json:"button_seat,omitempty"`
+	HandsToRun   int                 `json:"hands_to_run"`
+	StartingHand *uint64             `json:"starting_hand,omitempty"`
+	ButtonSeat   *uint8              `json:"button_seat,omitempty"`
 	TableConfig  *domain.TableConfig `json:"table_config,omitempty"`
-	Seats        []StartSeat       `json:"seats"`
+	Seats        []StartSeat         `json:"seats"`
 }
 
 type StartSeat struct {
-	SeatNo uint8             `json:"seat_no"`
-	Stack  uint32            `json:"stack"`
-	Status domain.SeatStatus `json:"status"`
+	SeatNo         uint8             `json:"seat_no"`
+	Stack          uint32            `json:"stack"`
+	Status         domain.SeatStatus `json:"status"`
+	AgentEndpoint  string            `json:"agent_endpoint,omitempty"`
+	AgentTimeoutMS *uint64           `json:"agent_timeout_ms,omitempty"`
 }
 
 type tableStatusResponse struct {
@@ -81,17 +92,24 @@ type actionResponse struct {
 func NewServer(
 	repo persistence.Repository,
 	runnerFactory func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner,
-	providerFactory func(tableID string) (tablerunner.ActionProvider, error),
+	providerFactory func(tableID string, start StartRequest, cfg ServerConfig) (tablerunner.ActionProvider, error),
+	config ServerConfig,
 ) *Server {
 	return &Server{
 		repo:            repo,
 		runnerFactory:   runnerFactory,
 		providerFactory: providerFactory,
+		config:          config,
 		runs:            make(map[string]*tableRun),
 	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
 	if tableID, action, ok := parseTableRoute(r.URL.Path); ok {
 		switch {
 		case r.Method == http.MethodPost && action == "start":
@@ -133,7 +151,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 		return
 	}
 
-	input, config, buttonSeat, seats, err := validateStartRequest(tableID, req)
+	input, config, buttonSeat, seats, err := validateStartRequest(tableID, req, s.config)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -168,7 +186,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 		return
 	}
 
-	provider, err := s.providerFactory(tableID)
+	provider, err := s.providerFactory(tableID, req, s.config)
 	if err != nil {
 		s.failBeforeRun(tableID, run, fmt.Errorf("resolve action provider: %w", err))
 		writeError(w, http.StatusInternalServerError, "failed to create action provider")
@@ -428,7 +446,7 @@ func (s *Server) failRun(_ string, run *tableRun, err error) {
 	run.cancel()
 }
 
-func validateStartRequest(tableID string, req StartRequest) (tablerunner.RunTableInput, domain.TableConfig, domain.SeatNo, []domain.SeatState, error) {
+func validateStartRequest(tableID string, req StartRequest, serverCfg ServerConfig) (tablerunner.RunTableInput, domain.TableConfig, domain.SeatNo, []domain.SeatState, error) {
 	cfg := domain.DefaultV0TableConfig()
 	if req.TableConfig != nil {
 		cfg = *req.TableConfig
@@ -458,6 +476,20 @@ func validateStartRequest(tableID string, req StartRequest) (tablerunner.RunTabl
 		if seat.Status != "" {
 			seatState.Status = seat.Status
 		}
+		if isSeatActiveForStart(seat.Status) {
+			parsedEndpoint, err := url.Parse(seat.AgentEndpoint)
+			if err != nil || parsedEndpoint == nil || parsedEndpoint.Host == "" {
+				return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d has invalid agent_endpoint", seatNo)
+			}
+			if parsedEndpoint.Scheme != "http" && parsedEndpoint.Scheme != "https" {
+				return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d has unsupported endpoint scheme %q", seatNo, parsedEndpoint.Scheme)
+			}
+			if len(serverCfg.AllowedAgentHosts) > 0 {
+				if _, ok := serverCfg.AllowedAgentHosts[parsedEndpoint.Host]; !ok {
+					return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d endpoint host %q is not allowlisted", seatNo, parsedEndpoint.Host)
+				}
+			}
+		}
 		seats = append(seats, seatState)
 	}
 
@@ -483,6 +515,19 @@ func validateStartRequest(tableID string, req StartRequest) (tablerunner.RunTabl
 		Seats:        seats,
 		Config:       cfg,
 	}, cfg, buttonSeat, seats, nil
+}
+
+func isSeatActiveForStart(status domain.SeatStatus) bool {
+	return status == "" || status == domain.SeatStatusActive
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	token := strings.TrimSpace(s.config.AuthBearerToken)
+	if token == "" {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	return auth == "Bearer "+token
 }
 
 func parseTableRoute(path string) (tableID string, action string, ok bool) {

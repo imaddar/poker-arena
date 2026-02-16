@@ -55,7 +55,7 @@ func TestGetHands_ReturnsPersistedHandsForTable(t *testing.T) {
 		t.Fatalf("CreateHand hand-other failed: %v", err)
 	}
 
-	server := NewServer(repo, nil, nil)
+	server := NewServer(repo, nil, nil, ServerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -80,7 +80,7 @@ func TestGetHands_UnknownTableReturnsNotFound(t *testing.T) {
 	t.Parallel()
 
 	repo := persistence.NewInMemoryRepository()
-	server := NewServer(repo, nil, nil)
+	server := NewServer(repo, nil, nil, ServerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/tables/missing/hands", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -123,7 +123,7 @@ func TestGetActions_ReturnsPersistedActionsForHand(t *testing.T) {
 		t.Fatalf("AppendAction failed: %v", err)
 	}
 
-	server := NewServer(repo, nil, nil)
+	server := NewServer(repo, nil, nil, ServerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/actions", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -153,18 +153,23 @@ func TestStartRunPersistsHandStartedAtIndependentlyFromRunStartedAt(t *testing.T
 		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner {
 			return fakeRunner{cfg: cfg}
 		},
-		func(tableID string) (tablerunner.ActionProvider, error) {
+		func(tableID string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
 			return fakeProvider{}, nil
+		},
+		ServerConfig{
+			AuthBearerToken:   "test-token",
+			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
 		},
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
 		"hands_to_run": 1,
 		"seats": [
-			{"seat_no": 1, "stack": 10000, "status": "active"},
-			{"seat_no": 2, "stack": 10000, "status": "active"}
+			{"seat_no": 1, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9001/callback"},
+			{"seat_no": 2, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9002/callback"}
 		]
 	}`))
+	req.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -196,6 +201,165 @@ func TestStartRunPersistsHandStartedAtIndependentlyFromRunStartedAt(t *testing.T
 	}
 }
 
+func TestAuth_MissingBearerTokenReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+}
+
+func TestAuth_WrongBearerTokenReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+}
+
+func TestAuth_CorrectBearerTokenAllowsRequest(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestStartRejectsActiveSeatMissingAgentEndpoint(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{AuthBearerToken: "secret"},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
+		"hands_to_run": 1,
+		"seats": [
+			{"seat_no": 1, "stack": 10000, "status": "active"},
+			{"seat_no": 2, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9002/callback"}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
+func TestStartRejectsMalformedAgentEndpoint(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{AuthBearerToken: "secret"},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
+		"hands_to_run": 1,
+		"seats": [
+			{"seat_no": 1, "stack": 10000, "status": "active", "agent_endpoint": "not-a-url"},
+			{"seat_no": 2, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9002/callback"}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
+func TestStartRejectsDisallowedAgentHost(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{
+			AuthBearerToken:   "secret",
+			AllowedAgentHosts: map[string]struct{}{"agent.local:9002": {}},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
+		"hands_to_run": 1,
+		"seats": [
+			{"seat_no": 1, "stack": 10000, "status": "active", "agent_endpoint": "http://blocked.local:9001/callback"},
+			{"seat_no": 2, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9002/callback"}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
+func TestStartAcceptsValidAgentEndpoints(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{
+			AuthBearerToken:   "secret",
+			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
+		"hands_to_run": 1,
+		"seats": [
+			{"seat_no": 1, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9001/callback"},
+			{"seat_no": 2, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9002/callback"}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
 type fakeRunner struct {
 	cfg tablerunner.RunnerConfig
 }
@@ -211,11 +375,11 @@ func (r fakeRunner) RunTable(_ context.Context, input tablerunner.RunTableInput)
 	}
 
 	initial := domain.HandState{
-		HandID: "hand-1",
-		TableID: input.TableID,
-		HandNo: input.StartingHand,
-		Phase: domain.HandPhaseBetting,
-		Street: domain.StreetPreflop,
+		HandID:     "hand-1",
+		TableID:    input.TableID,
+		HandNo:     input.StartingHand,
+		Phase:      domain.HandPhaseBetting,
+		Street:     domain.StreetPreflop,
 		ActingSeat: seat1,
 		Seats: []domain.SeatState{
 			domain.NewSeatState(seat1, input.Config.StartingStack),
@@ -224,11 +388,11 @@ func (r fakeRunner) RunTable(_ context.Context, input tablerunner.RunTableInput)
 	}
 	if r.cfg.OnHandStart != nil {
 		r.cfg.OnHandStart(tablerunner.RunHandInput{
-			TableID: input.TableID,
-			HandNo: input.StartingHand,
+			TableID:    input.TableID,
+			HandNo:     input.StartingHand,
 			ButtonSeat: input.ButtonSeat,
-			Seats: append([]domain.SeatState(nil), input.Seats...),
-			Config: input.Config,
+			Seats:      append([]domain.SeatState(nil), input.Seats...),
+			Config:     input.Config,
 		}, initial)
 	}
 
@@ -237,31 +401,31 @@ func (r fakeRunner) RunTable(_ context.Context, input tablerunner.RunTableInput)
 	final.Phase = domain.HandPhaseComplete
 	final.ShowdownAwards = []domain.PotAward{{
 		Amount: input.Config.SmallBlind + input.Config.BigBlind,
-		Seats: []domain.SeatNo{seat1},
+		Seats:  []domain.SeatNo{seat1},
 		Reason: "uncontested",
 	}}
 	if r.cfg.OnHandComplete != nil {
 		r.cfg.OnHandComplete(tablerunner.HandSummary{
-			HandNo: input.StartingHand,
-			FinalPhase: domain.HandPhaseComplete,
-			ActionCount: 0,
+			HandNo:        input.StartingHand,
+			FinalPhase:    domain.HandPhaseComplete,
+			ActionCount:   0,
 			FallbackCount: 0,
-			FinalState: final,
+			FinalState:    final,
 		})
 	}
 
 	return tablerunner.RunTableResult{
 		HandsCompleted: 1,
-		FinalButton: input.ButtonSeat,
-		FinalSeats: append([]domain.SeatState(nil), input.Seats...),
-		TotalActions: 0,
+		FinalButton:    input.ButtonSeat,
+		FinalSeats:     append([]domain.SeatState(nil), input.Seats...),
+		TotalActions:   0,
 		TotalFallbacks: 0,
 		HandSummaries: []tablerunner.HandSummary{{
-			HandNo: input.StartingHand,
-			FinalPhase: domain.HandPhaseComplete,
-			ActionCount: 0,
+			HandNo:        input.StartingHand,
+			FinalPhase:    domain.HandPhaseComplete,
+			ActionCount:   0,
 			FallbackCount: 0,
-			FinalState: final,
+			FinalState:    final,
 		}},
 	}, nil
 }
