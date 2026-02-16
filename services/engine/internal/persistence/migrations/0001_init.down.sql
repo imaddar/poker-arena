@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS actions;
+DROP TABLE IF EXISTS hands;
+DROP TABLE IF EXISTS table_runs;

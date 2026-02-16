@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"net/http"
@@ -8,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 	"github.com/imaddar/poker-arena/services/engine/internal/api"
 	"github.com/imaddar/poker-arena/services/engine/internal/domain"
 	"github.com/imaddar/poker-arena/services/engine/internal/persistence"
 	"github.com/imaddar/poker-arena/services/engine/internal/tablerunner"
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -45,7 +47,43 @@ func main() {
 		httpTimeoutMS = parsed
 	}
 
-	repo := persistence.NewInMemoryRepository()
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing required env DATABASE_URL")
+		os.Exit(1)
+	}
+	if !hasSQLDriver("postgres") {
+		fmt.Fprintln(os.Stderr, "postgres SQL driver is not linked; add a driver import such as github.com/lib/pq in this binary")
+		os.Exit(1)
+	}
+
+	maxOpenConns := parsePositiveIntEnvOrDefault("DATABASE_MAX_OPEN_CONNS", 10)
+	maxIdleConns := parsePositiveIntEnvOrDefault("DATABASE_MAX_IDLE_CONNS", 5)
+	connMaxLifetimeSec := parsePositiveIntEnvOrDefault("DATABASE_CONN_MAX_LIFETIME_SEC", 300)
+
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
+	db.SetConnMaxLifetime(time.Duration(connMaxLifetimeSec) * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "database ping failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := persistence.MigratePostgres(ctx, db); err != nil {
+		fmt.Fprintf(os.Stderr, "database migration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	repo := persistence.NewPostgresRepository(db)
 	serverConfig := api.ServerConfig{
 		AuthBearerToken:       bearerToken,
 		AllowedAgentHosts:     allowlist,
@@ -67,6 +105,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "server failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func parsePositiveIntEnvOrDefault(key string, defaultValue int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		fmt.Fprintf(os.Stderr, "invalid %s value %q\n", key, raw)
+		os.Exit(1)
+	}
+	return value
+}
+
+func hasSQLDriver(name string) bool {
+	for _, driver := range sql.Drivers() {
+		if driver == name {
+			return true
+		}
+	}
+	return false
 }
 
 func parseAllowlist(raw string) map[string]struct{} {
