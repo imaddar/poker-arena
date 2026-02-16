@@ -31,10 +31,24 @@ type Runner interface {
 }
 
 type ServerConfig struct {
-	AuthBearerToken       string
+	AdminBearerTokens     map[string]struct{}
+	SeatBearerTokens      map[string]domain.SeatNo
 	AllowedAgentHosts     map[string]struct{}
 	DefaultAgentTimeoutMS uint64
 	AgentHTTPTimeout      time.Duration
+}
+
+type CallerRole string
+
+const (
+	CallerRoleAdmin CallerRole = "admin"
+	CallerRoleSeat  CallerRole = "seat"
+)
+
+type CallerIdentity struct {
+	Role  CallerRole
+	Seat  *domain.SeatNo
+	Token string
 }
 
 type tableRun struct {
@@ -131,7 +145,8 @@ func NewServer(
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
+	identity, ok := s.authenticate(r)
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -139,13 +154,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if tableID, action, ok := parseTableRoute(r.URL.Path); ok {
 		switch {
 		case r.Method == http.MethodPost && action == "start":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
 			s.handleStart(w, r, tableID)
 		case r.Method == http.MethodPost && action == "stop":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
 			s.handleStop(w, tableID)
 		case r.Method == http.MethodGet && action == "status":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
 			s.handleStatus(w, tableID)
 		case r.Method == http.MethodGet && action == "hands":
-			s.handleHands(w, tableID)
+			s.handleHands(w, identity, tableID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -155,9 +182,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if handID, action, ok := parseHandRoute(r.URL.Path); ok {
 		switch {
 		case r.Method == http.MethodGet && action == "actions":
-			s.handleActions(w, handID)
+			s.handleActions(w, identity, handID)
 		case r.Method == http.MethodGet && action == "replay":
-			s.handleReplay(w, r, handID)
+			s.handleReplay(w, r, identity, handID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -387,13 +414,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, tableID string) {
 	})
 }
 
-func (s *Server) handleHands(w http.ResponseWriter, tableID string) {
+func (s *Server) handleHands(w http.ResponseWriter, identity CallerIdentity, tableID string) {
 	hands, err := s.repo.ListHands(tableID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load hands")
 		return
 	}
-	if len(hands) == 0 {
+
+	filtered := hands
+	if identity.Role == CallerRoleSeat {
+		filtered = make([]persistence.HandRecord, 0, len(hands))
+		for _, hand := range hands {
+			if handIncludesSeat(hand, identity.seatNo()) {
+				filtered = append(filtered, hand)
+			}
+		}
+	}
+
+	if len(hands) == 0 || (identity.Role == CallerRoleSeat && len(filtered) == 0) {
 		_, ok, getErr := s.repo.GetTableRun(tableID)
 		if getErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load table status")
@@ -405,8 +443,8 @@ func (s *Server) handleHands(w http.ResponseWriter, tableID string) {
 		}
 	}
 
-	response := make([]handResponse, 0, len(hands))
-	for _, hand := range hands {
+	response := make([]handResponse, 0, len(filtered))
+	for _, hand := range filtered {
 		response = append(response, handResponse{
 			HandID:        hand.HandID,
 			TableID:       hand.TableID,
@@ -420,7 +458,21 @@ func (s *Server) handleHands(w http.ResponseWriter, tableID string) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) handleActions(w http.ResponseWriter, handID string) {
+func (s *Server) handleActions(w http.ResponseWriter, identity CallerIdentity, handID string) {
+	hand, ok, err := s.repo.GetHand(handID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load hand")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "hand not found")
+		return
+	}
+	if identity.Role == CallerRoleSeat && !handIncludesSeat(hand, identity.seatNo()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
 	actions, err := s.repo.ListActions(handID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load actions")
@@ -441,7 +493,7 @@ func (s *Server) handleActions(w http.ResponseWriter, handID string) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, handID string) {
+func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, identity CallerIdentity, handID string) {
 	redactHoleCards, err := parseRedactHoleCards(r.URL.Query().Get("redact_hole_cards"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -457,6 +509,10 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, handID str
 		writeError(w, http.StatusNotFound, "hand not found")
 		return
 	}
+	if identity.Role == CallerRoleSeat && !handIncludesSeat(hand, identity.seatNo()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 
 	actions, err := s.repo.ListActions(handID)
 	if err != nil {
@@ -464,6 +520,7 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, handID str
 		return
 	}
 	finalState := cloneHandStateForReplay(hand.FinalState)
+	applyReplayVisibility(identity, hand, &finalState)
 	if redactHoleCards {
 		redactFoldedSeatHoleCards(&finalState)
 	}
@@ -649,13 +706,35 @@ func isSeatStatusAllowed(status domain.SeatStatus) bool {
 	}
 }
 
-func (s *Server) authorized(r *http.Request) bool {
-	token := strings.TrimSpace(s.config.AuthBearerToken)
-	if token == "" {
-		return true
+func (s *Server) authenticate(r *http.Request) (CallerIdentity, bool) {
+	if len(s.config.AdminBearerTokens) == 0 && len(s.config.SeatBearerTokens) == 0 {
+		return CallerIdentity{Role: CallerRoleAdmin}, true
 	}
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	return auth == "Bearer "+token
+
+	token, ok := parseBearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		return CallerIdentity{}, false
+	}
+	if _, exists := s.config.AdminBearerTokens[token]; exists {
+		return CallerIdentity{Role: CallerRoleAdmin, Token: token}, true
+	}
+	if seat, exists := s.config.SeatBearerTokens[token]; exists {
+		seatCopy := seat
+		return CallerIdentity{Role: CallerRoleSeat, Seat: &seatCopy, Token: token}, true
+	}
+	return CallerIdentity{}, false
+}
+
+func parseBearerToken(authorization string) (string, bool) {
+	trimmed := strings.TrimSpace(authorization)
+	if !strings.HasPrefix(trimmed, "Bearer ") {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(trimmed, "Bearer "))
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }
 
 func parseTableRoute(path string) (tableID string, action string, ok bool) {
@@ -742,6 +821,55 @@ func redactFoldedSeatHoleCards(state *domain.HandState) {
 			state.HoleCards[i].Cards = []domain.Card{}
 		}
 	}
+}
+
+func applyReplayVisibility(identity CallerIdentity, hand persistence.HandRecord, state *domain.HandState) {
+	if identity.Role != CallerRoleSeat {
+		return
+	}
+	callerSeat := identity.seatNo()
+	showdown := isShowdownHand(hand)
+	for i := range state.HoleCards {
+		seatNo := state.HoleCards[i].SeatNo
+		if seatNo == callerSeat || showdown {
+			continue
+		}
+		state.HoleCards[i].Cards = []domain.Card{}
+	}
+}
+
+func isShowdownHand(hand persistence.HandRecord) bool {
+	for _, award := range hand.WinnerSummary {
+		if award.Reason == "showdown" {
+			return true
+		}
+	}
+	for _, award := range hand.FinalState.ShowdownAwards {
+		if award.Reason == "showdown" {
+			return true
+		}
+	}
+	return false
+}
+
+func handIncludesSeat(hand persistence.HandRecord, seat domain.SeatNo) bool {
+	for _, seatState := range hand.FinalState.Seats {
+		if seatState.SeatNo == seat {
+			return true
+		}
+	}
+	return false
+}
+
+func (i CallerIdentity) isAdmin() bool {
+	return i.Role == CallerRoleAdmin
+}
+
+func (i CallerIdentity) seatNo() domain.SeatNo {
+	if i.Seat == nil {
+		return 0
+	}
+	return *i.Seat
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

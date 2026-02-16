@@ -3,29 +3,45 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 	"github.com/imaddar/poker-arena/services/engine/internal/api"
 	"github.com/imaddar/poker-arena/services/engine/internal/domain"
 	"github.com/imaddar/poker-arena/services/engine/internal/persistence"
 	"github.com/imaddar/poker-arena/services/engine/internal/tablerunner"
 	_ "github.com/lib/pq"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	flag.Parse()
 
-	bearerToken := strings.TrimSpace(os.Getenv("CONTROLPLANE_BEARER_TOKEN"))
-	if bearerToken == "" {
-		fmt.Fprintln(os.Stderr, "missing required env CONTROLPLANE_BEARER_TOKEN")
+	adminTokensRaw := strings.TrimSpace(os.Getenv("CONTROLPLANE_ADMIN_TOKENS"))
+	if adminTokensRaw == "" {
+		fmt.Fprintln(os.Stderr, "missing required env CONTROLPLANE_ADMIN_TOKENS")
 		os.Exit(1)
 	}
+	adminTokens, err := parseAdminTokens(adminTokensRaw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid CONTROLPLANE_ADMIN_TOKENS: %v\n", err)
+		os.Exit(1)
+	}
+	seatTokens, err := parseSeatTokens(strings.TrimSpace(os.Getenv("CONTROLPLANE_SEAT_TOKENS")), domain.DefaultMaxSeats)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid CONTROLPLANE_SEAT_TOKENS: %v\n", err)
+		os.Exit(1)
+	}
+	if hasTokenOverlap(adminTokens, seatTokens) {
+		fmt.Fprintln(os.Stderr, "invalid token config: a token cannot be both admin and seat scoped")
+		os.Exit(1)
+	}
+
 	allowlistRaw := strings.TrimSpace(os.Getenv("AGENT_ENDPOINT_ALLOWLIST"))
 	if allowlistRaw == "" {
 		fmt.Fprintln(os.Stderr, "missing required env AGENT_ENDPOINT_ALLOWLIST")
@@ -85,7 +101,8 @@ func main() {
 
 	repo := persistence.NewPostgresRepository(db)
 	serverConfig := api.ServerConfig{
-		AuthBearerToken:       bearerToken,
+		AdminBearerTokens:     adminTokens,
+		SeatBearerTokens:      seatTokens,
 		AllowedAgentHosts:     allowlist,
 		DefaultAgentTimeoutMS: httpTimeoutMS,
 		AgentHTTPTimeout:      time.Duration(httpTimeoutMS) * time.Millisecond,
@@ -139,4 +156,69 @@ func parseAllowlist(raw string) map[string]struct{} {
 		hosts[host] = struct{}{}
 	}
 	return hosts
+}
+
+func parseAdminTokens(raw string) (map[string]struct{}, error) {
+	tokens := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			return nil, errors.New("admin token list contains an empty token")
+		}
+		tokens[token] = struct{}{}
+	}
+	if len(tokens) == 0 {
+		return nil, errors.New("at least one admin token is required")
+	}
+	return tokens, nil
+}
+
+func parseSeatTokens(raw string, maxSeats uint8) (map[string]domain.SeatNo, error) {
+	tokens := make(map[string]domain.SeatNo)
+	if raw == "" {
+		return tokens, nil
+	}
+
+	usedSeats := make(map[domain.SeatNo]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			return nil, errors.New("seat token list contains an empty entry")
+		}
+		pieces := strings.SplitN(entry, ":", 2)
+		if len(pieces) != 2 {
+			return nil, fmt.Errorf("expected seat_no:token entry, got %q", entry)
+		}
+		seatRaw := strings.TrimSpace(pieces[0])
+		token := strings.TrimSpace(pieces[1])
+		if token == "" {
+			return nil, fmt.Errorf("seat token entry %q has empty token", entry)
+		}
+		seatUint64, err := strconv.ParseUint(seatRaw, 10, 8)
+		if err != nil {
+			return nil, fmt.Errorf("seat token entry %q has invalid seat number", entry)
+		}
+		seatNo, err := domain.NewSeatNo(uint8(seatUint64), maxSeats)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := usedSeats[seatNo]; exists {
+			return nil, fmt.Errorf("duplicate seat mapping for seat %d", seatNo)
+		}
+		usedSeats[seatNo] = struct{}{}
+		if _, exists := tokens[token]; exists {
+			return nil, fmt.Errorf("duplicate token %q in seat token map", token)
+		}
+		tokens[token] = seatNo
+	}
+	return tokens, nil
+}
+
+func hasTokenOverlap(adminTokens map[string]struct{}, seatTokens map[string]domain.SeatNo) bool {
+	for token := range seatTokens {
+		if _, exists := adminTokens[token]; exists {
+			return true
+		}
+	}
+	return false
 }

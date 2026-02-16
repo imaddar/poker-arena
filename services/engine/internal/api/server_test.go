@@ -317,6 +317,310 @@ func TestGetReplay_InvalidRedactHoleCardsValueReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestAuth_ValidSeatTokenCanAccessHistoryRoute(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:    "hand-1",
+		TableID:   "table-1",
+		HandNo:    1,
+		StartedAt: now.Add(-30 * time.Second),
+		FinalState: domain.HandState{
+			HandID: "hand-1",
+			Seats: []domain.SeatState{
+				{SeatNo: 1}, {SeatNo: 2},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestAuth_SeatTokenForbiddenOnControlRoutes(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	for _, route := range []string{"/tables/t1/start", "/tables/t1/stop", "/tables/t1/status"} {
+		method := http.MethodGet
+		if strings.HasSuffix(route, "/start") || strings.HasSuffix(route, "/stop") {
+			method = http.MethodPost
+		}
+		req := httptest.NewRequest(method, route, strings.NewReader(`{"hands_to_run":1,"seats":[{"seat_no":1,"stack":10000,"agent_endpoint":"http://agent.local"}]}`))
+		req.Header.Set("Authorization", "Bearer seat1")
+		w := httptest.NewRecorder()
+		server.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected status %d for %s, got %d body=%s", http.StatusForbidden, route, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestReplay_SeatTokenNonShowdownRedactsOpponents(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:     "hand-1",
+		TableID:    "table-1",
+		HandNo:     1,
+		StartedAt:  now.Add(-30 * time.Second),
+		FinalPhase: domain.HandPhaseComplete,
+		FinalState: domain.HandState{
+			HandID: "hand-1", TableID: "table-1", HandNo: 1, Phase: domain.HandPhaseComplete,
+			Seats: []domain.SeatState{
+				{SeatNo: 1, Status: domain.SeatStatusActive},
+				{SeatNo: 2, Status: domain.SeatStatusActive},
+			},
+			HoleCards: []domain.SeatCards{
+				{SeatNo: 1, Cards: []domain.Card{{Rank: 14, Suit: domain.SuitSpades}, {Rank: 10, Suit: domain.SuitSpades}}},
+				{SeatNo: 2, Cards: []domain.Card{{Rank: 4, Suit: domain.SuitClubs}, {Rank: 8, Suit: domain.SuitClubs}}},
+			},
+		},
+		WinnerSummary: []domain.PotAward{{Amount: 100, Seats: []domain.SeatNo{1}, Reason: "uncontested"}},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var replay handReplayResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay failed: %v", err)
+	}
+	if len(replay.FinalState.HoleCards[0].Cards) != 2 {
+		t.Fatalf("expected own cards visible, got %d", len(replay.FinalState.HoleCards[0].Cards))
+	}
+	if len(replay.FinalState.HoleCards[1].Cards) != 0 {
+		t.Fatalf("expected opponent cards redacted, got %d", len(replay.FinalState.HoleCards[1].Cards))
+	}
+}
+
+func TestReplay_SeatTokenShowdownRevealsOpponents(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:    "hand-1",
+		TableID:   "table-1",
+		HandNo:    1,
+		StartedAt: now.Add(-30 * time.Second),
+		FinalState: domain.HandState{
+			HandID: "hand-1",
+			Seats: []domain.SeatState{
+				{SeatNo: 1}, {SeatNo: 2},
+			},
+			ShowdownAwards: []domain.PotAward{{Amount: 200, Seats: []domain.SeatNo{1}, Reason: "showdown"}},
+			HoleCards: []domain.SeatCards{
+				{SeatNo: 1, Cards: []domain.Card{{Rank: 14, Suit: domain.SuitSpades}, {Rank: 13, Suit: domain.SuitSpades}}},
+				{SeatNo: 2, Cards: []domain.Card{{Rank: 2, Suit: domain.SuitClubs}, {Rank: 7, Suit: domain.SuitDiamonds}}},
+			},
+		},
+		WinnerSummary: []domain.PotAward{{Amount: 200, Seats: []domain.SeatNo{1}, Reason: "showdown"}},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+	var replay handReplayResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay failed: %v", err)
+	}
+	if len(replay.FinalState.HoleCards[1].Cards) != 2 {
+		t.Fatalf("expected showdown opponent cards visible, got %d", len(replay.FinalState.HoleCards[1].Cards))
+	}
+}
+
+func TestReplay_SeatTokenForbiddenWhenSeatNotInHand(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:    "hand-1",
+		TableID:   "table-1",
+		HandNo:    1,
+		StartedAt: now,
+		FinalState: domain.HandState{
+			HandID: "hand-1",
+			Seats: []domain.SeatState{
+				{SeatNo: 2},
+				{SeatNo: 3},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, w.Code, w.Body.String())
+	}
+}
+
+func TestActions_SeatTokenForbiddenWhenSeatNotInHand(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:    "hand-1",
+		TableID:   "table-1",
+		HandNo:    1,
+		StartedAt: now,
+		FinalState: domain.HandState{
+			HandID: "hand-1",
+			Seats: []domain.SeatState{
+				{SeatNo: 2},
+				{SeatNo: 3},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/actions", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, w.Code, w.Body.String())
+	}
+}
+
+func TestHands_SeatTokenReturnsOnlyParticipatingHands(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	for _, hand := range []persistence.HandRecord{
+		{
+			HandID: "hand-1", TableID: "table-1", HandNo: 1, StartedAt: now.Add(-40 * time.Second),
+			FinalState: domain.HandState{HandID: "hand-1", Seats: []domain.SeatState{{SeatNo: 1}, {SeatNo: 2}}},
+		},
+		{
+			HandID: "hand-2", TableID: "table-1", HandNo: 2, StartedAt: now.Add(-30 * time.Second),
+			FinalState: domain.HandState{HandID: "hand-2", Seats: []domain.SeatState{{SeatNo: 3}, {SeatNo: 4}}},
+		},
+	} {
+		if err := repo.CreateHand(hand); err != nil {
+			t.Fatalf("CreateHand failed: %v", err)
+		}
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+	var hands []handResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &hands); err != nil {
+		t.Fatalf("decode hands failed: %v", err)
+	}
+	if len(hands) != 1 || hands[0].HandID != "hand-1" {
+		t.Fatalf("expected only hand-1 for seat token, got %+v", hands)
+	}
+}
+
 func TestGetReplay_UnknownHandReturnsNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -334,7 +638,7 @@ func TestGetReplay_RequiresAuth(t *testing.T) {
 	t.Parallel()
 
 	repo := persistence.NewInMemoryRepository()
-	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}})
 	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -356,7 +660,7 @@ func TestStartRunPersistsHandStartedAtIndependentlyFromRunStartedAt(t *testing.T
 			return fakeProvider{}, nil
 		},
 		ServerConfig{
-			AuthBearerToken:   "test-token",
+			AdminBearerTokens: map[string]struct{}{"test-token": {}},
 			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
 		},
 	)
@@ -404,7 +708,7 @@ func TestAuth_MissingBearerTokenReturnsUnauthorized(t *testing.T) {
 	t.Parallel()
 
 	repo := persistence.NewInMemoryRepository()
-	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}})
 	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -417,7 +721,7 @@ func TestAuth_WrongBearerTokenReturnsUnauthorized(t *testing.T) {
 	t.Parallel()
 
 	repo := persistence.NewInMemoryRepository()
-	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}})
 	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	w := httptest.NewRecorder()
@@ -431,7 +735,7 @@ func TestAuth_CorrectBearerTokenAllowsRequest(t *testing.T) {
 	t.Parallel()
 
 	repo := persistence.NewInMemoryRepository()
-	server := NewServer(repo, nil, nil, ServerConfig{AuthBearerToken: "secret"})
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}})
 	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/hands", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	w := httptest.NewRecorder()
@@ -451,7 +755,7 @@ func TestStartRejectsActiveSeatMissingAgentEndpoint(t *testing.T) {
 		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
 			return fakeProvider{}, nil
 		},
-		ServerConfig{AuthBearerToken: "secret"},
+		ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}},
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
@@ -479,7 +783,7 @@ func TestStartRejectsMalformedAgentEndpoint(t *testing.T) {
 		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
 			return fakeProvider{}, nil
 		},
-		ServerConfig{AuthBearerToken: "secret"},
+		ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}},
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
@@ -508,7 +812,7 @@ func TestStartRejectsInvalidSeatStatus(t *testing.T) {
 			return fakeProvider{}, nil
 		},
 		ServerConfig{
-			AuthBearerToken:   "secret",
+			AdminBearerTokens: map[string]struct{}{"secret": {}},
 			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
 		},
 	)
@@ -539,7 +843,7 @@ func TestStartRejectsDisallowedAgentHost(t *testing.T) {
 			return fakeProvider{}, nil
 		},
 		ServerConfig{
-			AuthBearerToken:   "secret",
+			AdminBearerTokens: map[string]struct{}{"secret": {}},
 			AllowedAgentHosts: map[string]struct{}{"agent.local:9002": {}},
 		},
 	)
@@ -570,7 +874,7 @@ func TestStartAcceptsValidAgentEndpoints(t *testing.T) {
 			return fakeProvider{}, nil
 		},
 		ServerConfig{
-			AuthBearerToken:   "secret",
+			AdminBearerTokens: map[string]struct{}{"secret": {}},
 			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
 		},
 	)
@@ -600,7 +904,7 @@ func TestStartRejectsOversizedRequestBody(t *testing.T) {
 		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
 			return fakeProvider{}, nil
 		},
-		ServerConfig{AuthBearerToken: "secret"},
+		ServerConfig{AdminBearerTokens: map[string]struct{}{"secret": {}}},
 	)
 
 	prefix := `{"hands_to_run":1,"seats":[{"seat_no":1,"stack":10000,"status":"active","agent_endpoint":"http://agent.local/callback","padding":"`

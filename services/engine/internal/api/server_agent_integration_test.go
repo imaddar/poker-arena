@@ -183,7 +183,18 @@ func TestAgentRun_IllegalActionTriggersFallback(t *testing.T) {
 func newIntegrationServer(
 	t *testing.T,
 	repo persistence.Repository,
-	token string,
+	adminToken string,
+	allowlist []string,
+	clientTimeout time.Duration,
+) *Server {
+	return newIntegrationServerWithTokens(t, repo, adminToken, nil, allowlist, clientTimeout)
+}
+
+func newIntegrationServerWithTokens(
+	t *testing.T,
+	repo persistence.Repository,
+	adminToken string,
+	seatTokens map[string]domain.SeatNo,
 	allowlist []string,
 	clientTimeout time.Duration,
 ) *Server {
@@ -195,7 +206,8 @@ func newIntegrationServer(
 	}
 
 	config := ServerConfig{
-		AuthBearerToken:       token,
+		AdminBearerTokens:     map[string]struct{}{adminToken: {}},
+		SeatBearerTokens:      seatTokens,
 		AllowedAgentHosts:     allowedHosts,
 		DefaultAgentTimeoutMS: domain.DefaultActionTimeoutMS,
 		AgentHTTPTimeout:      clientTimeout,
@@ -229,6 +241,118 @@ func newIntegrationServer(
 		},
 		config,
 	)
+}
+
+func TestSeatToken_HistoryAllowed_ControlForbidden(t *testing.T) {
+	t.Parallel()
+
+	agentA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentA.Close()
+	agentB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentB.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	adminToken := "admin-token"
+	seatToken := "seat-1-token"
+	server := newIntegrationServerWithTokens(
+		t,
+		repo,
+		adminToken,
+		map[string]domain.SeatNo{seatToken: 1},
+		[]string{mustHost(t, agentA.URL), mustHost(t, agentB.URL)},
+		250*time.Millisecond,
+	)
+
+	start := StartRequest{
+		HandsToRun: 1,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentA.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentB.URL + "/callback"},
+		},
+	}
+	startTable(t, server, adminToken, "table-seat-history", start, http.StatusOK)
+	_ = waitForTerminalStatus(t, server, adminToken, "table-seat-history", 3*time.Second)
+
+	hands := listHands(t, server, seatToken, "table-seat-history")
+	if len(hands) == 0 {
+		t.Fatal("expected seat token to see participating hands")
+	}
+	replay := getReplay(t, server, seatToken, hands[0].HandID)
+	if replay.HandID != hands[0].HandID {
+		t.Fatalf("expected replay hand %q, got %q", hands[0].HandID, replay.HandID)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-seat-history/status", nil)
+	req.Header.Set("Authorization", "Bearer "+seatToken)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected seat token status request to be forbidden, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSeatToken_ReplayRedactsOpponentHoleCardsForNonShowdown(t *testing.T) {
+	t.Parallel()
+
+	agentA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentA.Close()
+	agentB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, true)
+	}))
+	defer agentB.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	adminToken := "admin-token"
+	seatToken := "seat-1-token"
+	server := newIntegrationServerWithTokens(
+		t,
+		repo,
+		adminToken,
+		map[string]domain.SeatNo{seatToken: 1},
+		[]string{mustHost(t, agentA.URL), mustHost(t, agentB.URL)},
+		250*time.Millisecond,
+	)
+
+	start := StartRequest{
+		HandsToRun: 1,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentA.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentB.URL + "/callback"},
+		},
+	}
+	startTable(t, server, adminToken, "table-seat-redact", start, http.StatusOK)
+	status := waitForTerminalStatus(t, server, adminToken, "table-seat-redact", 3*time.Second)
+	if status.Status != persistence.TableRunStatusCompleted {
+		t.Fatalf("expected completed status, got %q", status.Status)
+	}
+
+	hands := listHands(t, server, seatToken, "table-seat-redact")
+	if len(hands) == 0 {
+		t.Fatal("expected hand history for seat token")
+	}
+	replay := getReplay(t, server, seatToken, hands[0].HandID)
+	var ownCards int
+	var oppCards int
+	for _, seatCards := range replay.FinalState.HoleCards {
+		if seatCards.SeatNo == 1 {
+			ownCards = len(seatCards.Cards)
+		}
+		if seatCards.SeatNo == 2 {
+			oppCards = len(seatCards.Cards)
+		}
+	}
+	if ownCards != 2 {
+		t.Fatalf("expected own hole cards to remain visible, got %d", ownCards)
+	}
+	if oppCards != 0 {
+		t.Fatalf("expected opponent hole cards to be redacted in non-showdown hand, got %d", oppCards)
+	}
 }
 
 type staticSeatEndpoints struct {
