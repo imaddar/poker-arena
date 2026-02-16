@@ -1,0 +1,406 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/imaddar/poker-arena/services/engine/internal/agentclient"
+	"github.com/imaddar/poker-arena/services/engine/internal/domain"
+	"github.com/imaddar/poker-arena/services/engine/internal/persistence"
+	"github.com/imaddar/poker-arena/services/engine/internal/tablerunner"
+)
+
+func TestAgentRun_CompletesAndPersistsHistory(t *testing.T) {
+	t.Parallel()
+
+	agentA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentA.Close()
+	agentB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentB.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	token := "integration-token"
+	server := newIntegrationServer(t, repo, token, []string{mustHost(t, agentA.URL), mustHost(t, agentB.URL)}, 250*time.Millisecond)
+
+	start := StartRequest{
+		HandsToRun: 3,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentA.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentB.URL + "/callback"},
+		},
+	}
+	startTable(t, server, token, "table-agent-happy", start, http.StatusOK)
+
+	status := waitForTerminalStatus(t, server, token, "table-agent-happy", 3*time.Second)
+	if status.Status != persistence.TableRunStatusCompleted {
+		t.Fatalf("expected completed status, got %q err=%q", status.Status, status.Error)
+	}
+	if status.HandsCompleted != 3 {
+		t.Fatalf("expected 3 hands completed, got %d", status.HandsCompleted)
+	}
+	if status.TotalActions == 0 {
+		t.Fatal("expected actions to be persisted")
+	}
+	if status.TotalFallbacks != 0 {
+		t.Fatalf("expected zero fallbacks, got %d", status.TotalFallbacks)
+	}
+
+	hands := listHands(t, server, token, "table-agent-happy")
+	if len(hands) != 3 {
+		t.Fatalf("expected 3 hand records, got %d", len(hands))
+	}
+	for _, hand := range hands {
+		actions := listActions(t, server, token, hand.HandID)
+		if len(actions) == 0 {
+			t.Fatalf("expected actions for hand %s", hand.HandID)
+		}
+		for _, action := range actions {
+			if action.IsFallback {
+				t.Fatalf("expected no fallback actions in happy path, found one in hand %s", hand.HandID)
+			}
+		}
+	}
+}
+
+func TestAgentRun_TimeoutTriggersFallbackAndPersistsIt(t *testing.T) {
+	t.Parallel()
+
+	agentFast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentFast.Close()
+	agentSlow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(250 * time.Millisecond)
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentSlow.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	token := "integration-token"
+	server := newIntegrationServer(t, repo, token, []string{mustHost(t, agentFast.URL), mustHost(t, agentSlow.URL)}, 50*time.Millisecond)
+
+	start := StartRequest{
+		HandsToRun: 1,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentFast.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentSlow.URL + "/callback"},
+		},
+	}
+	startTable(t, server, token, "table-agent-timeout", start, http.StatusOK)
+
+	status := waitForTerminalStatus(t, server, token, "table-agent-timeout", 3*time.Second)
+	if status.Status != persistence.TableRunStatusCompleted {
+		t.Fatalf("expected completed status, got %q err=%q", status.Status, status.Error)
+	}
+	if status.TotalFallbacks == 0 {
+		t.Fatal("expected fallback actions due to timeout")
+	}
+
+	hands := listHands(t, server, token, "table-agent-timeout")
+	if len(hands) == 0 {
+		t.Fatal("expected at least one hand")
+	}
+	foundFallback := false
+	for _, hand := range hands {
+		for _, action := range listActions(t, server, token, hand.HandID) {
+			if action.IsFallback {
+				foundFallback = true
+				break
+			}
+		}
+	}
+	if !foundFallback {
+		t.Fatal("expected persisted fallback action record")
+	}
+}
+
+func TestAgentRun_IllegalActionTriggersFallback(t *testing.T) {
+	t.Parallel()
+
+	agentLegal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentLegal.Close()
+	agentIllegal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"action": "raise",
+			"amount": uint32(0),
+		})
+	}))
+	defer agentIllegal.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	token := "integration-token"
+	server := newIntegrationServer(t, repo, token, []string{mustHost(t, agentLegal.URL), mustHost(t, agentIllegal.URL)}, 250*time.Millisecond)
+
+	start := StartRequest{
+		HandsToRun: 1,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentLegal.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentIllegal.URL + "/callback"},
+		},
+	}
+	startTable(t, server, token, "table-agent-illegal", start, http.StatusOK)
+
+	status := waitForTerminalStatus(t, server, token, "table-agent-illegal", 3*time.Second)
+	if status.Status != persistence.TableRunStatusCompleted {
+		t.Fatalf("expected completed status, got %q err=%q", status.Status, status.Error)
+	}
+	if status.TotalFallbacks == 0 {
+		t.Fatal("expected fallback actions due to illegal agent response")
+	}
+}
+
+func newIntegrationServer(
+	t *testing.T,
+	repo persistence.Repository,
+	token string,
+	allowlist []string,
+	clientTimeout time.Duration,
+) *Server {
+	t.Helper()
+
+	allowedHosts := make(map[string]struct{}, len(allowlist))
+	for _, host := range allowlist {
+		allowedHosts[host] = struct{}{}
+	}
+
+	config := ServerConfig{
+		AuthBearerToken:       token,
+		AllowedAgentHosts:     allowedHosts,
+		DefaultAgentTimeoutMS: domain.DefaultActionTimeoutMS,
+		AgentHTTPTimeout:      clientTimeout,
+	}
+
+	return NewServer(
+		repo,
+		func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner {
+			return tablerunner.New(provider, cfg)
+		},
+		func(_ string, start StartRequest, cfg ServerConfig) (tablerunner.ActionProvider, error) {
+			maxSeats := domain.DefaultV0TableConfig().MaxSeats
+			if start.TableConfig != nil {
+				maxSeats = start.TableConfig.MaxSeats
+			}
+			endpoints := make(map[domain.SeatNo]string, len(start.Seats))
+			for _, seat := range start.Seats {
+				seatNo, err := domain.NewSeatNo(seat.SeatNo, maxSeats)
+				if err != nil {
+					return nil, err
+				}
+				if seat.Status == "" || seat.Status == domain.SeatStatusActive {
+					endpoints[seatNo] = strings.TrimSpace(seat.AgentEndpoint)
+				}
+			}
+			return agentclient.ActionProvider{
+				Client:           agentclient.New(cfg.AgentHTTPTimeout),
+				Endpoints:        staticSeatEndpoints{endpoints: endpoints},
+				DefaultTimeoutMS: cfg.DefaultAgentTimeoutMS,
+			}, nil
+		},
+		config,
+	)
+}
+
+type staticSeatEndpoints struct {
+	endpoints map[domain.SeatNo]string
+}
+
+func (p staticSeatEndpoints) EndpointForSeat(_ domain.HandState, seat domain.SeatNo) (string, error) {
+	endpoint, ok := p.endpoints[seat]
+	if !ok || endpoint == "" {
+		return "", fmt.Errorf("%w: seat %d", agentclient.ErrEndpointNotConfigured, seat)
+	}
+	return endpoint, nil
+}
+
+func startTable(t *testing.T, server *Server, token string, tableID string, start StartRequest, wantStatus int) {
+	t.Helper()
+
+	body, err := json.Marshal(start)
+	if err != nil {
+		t.Fatalf("marshal start request failed: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/tables/"+tableID+"/start", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != wantStatus {
+		t.Fatalf("expected status %d, got %d body=%s", wantStatus, w.Code, w.Body.String())
+	}
+}
+
+func waitForTerminalStatus(t *testing.T, server *Server, token string, tableID string, timeout time.Duration) tableStatusResponse {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status := getStatus(t, server, token, tableID)
+		if status.Status == persistence.TableRunStatusCompleted ||
+			status.Status == persistence.TableRunStatusStopped ||
+			status.Status == persistence.TableRunStatusFailed {
+			return status
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for terminal status for table %s", tableID)
+	return tableStatusResponse{}
+}
+
+func getStatus(t *testing.T, server *Server, token string, tableID string) tableStatusResponse {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/tables/"+tableID+"/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status request failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var status tableStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status failed: %v", err)
+	}
+	return status
+}
+
+func listHands(t *testing.T, server *Server, token string, tableID string) []handResponse {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/tables/"+tableID+"/hands", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("hands request failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var hands []handResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &hands); err != nil {
+		t.Fatalf("decode hands failed: %v", err)
+	}
+	return hands
+}
+
+func listActions(t *testing.T, server *Server, token string, handID string) []actionResponse {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/hands/"+handID+"/actions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("actions request failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var actions []actionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &actions); err != nil {
+		t.Fatalf("decode actions failed: %v", err)
+	}
+	return actions
+}
+
+func mustHost(t *testing.T, rawURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("url parse failed: %v", err)
+	}
+	return parsed.Host
+}
+
+func writeAgentAction(t *testing.T, w http.ResponseWriter, r *http.Request, forceFold bool) {
+	t.Helper()
+
+	var payload struct {
+		ToCall       uint32   `json:"to_call"`
+		LegalActions []string `json:"legal_actions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode agent request failed: %v", err)
+	}
+
+	action := "fold"
+	if forceFold {
+		action = chooseLegal(payload.LegalActions, "fold", "check", "call")
+	} else if payload.ToCall > 0 {
+		action = chooseLegal(payload.LegalActions, "call", "fold")
+	} else {
+		action = chooseLegal(payload.LegalActions, "check", "fold")
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{"action": action})
+}
+
+func chooseLegal(legal []string, order ...string) string {
+	set := make(map[string]struct{}, len(legal))
+	for _, action := range legal {
+		set[action] = struct{}{}
+	}
+	for _, candidate := range order {
+		if _, ok := set[candidate]; ok {
+			return candidate
+		}
+	}
+	return "fold"
+}
+
+func TestStopDuringActiveRun_PreservesPartialHistory(t *testing.T) {
+	t.Parallel()
+
+	agentA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentA.Close()
+	agentB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentB.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	token := "integration-token"
+	server := newIntegrationServer(t, repo, token, []string{mustHost(t, agentA.URL), mustHost(t, agentB.URL)}, 250*time.Millisecond)
+
+	start := StartRequest{
+		HandsToRun: 8,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentA.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentB.URL + "/callback"},
+		},
+	}
+	startTable(t, server, token, "table-agent-stop", start, http.StatusOK)
+
+	time.Sleep(120 * time.Millisecond)
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-agent-stop/stop", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("stop failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	status := getStatus(t, server, token, "table-agent-stop")
+	if status.Status != persistence.TableRunStatusStopped {
+		t.Fatalf("expected stopped status, got %q", status.Status)
+	}
+
+	hands := listHands(t, server, token, "table-agent-stop")
+	if len(hands) == 0 {
+		t.Fatal("expected partial history with at least one hand")
+	}
+}
