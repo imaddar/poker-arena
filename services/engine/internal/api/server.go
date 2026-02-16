@@ -105,6 +105,14 @@ type handReplayResponse struct {
 	WinnerSummary []domain.PotAward `json:"winner_summary,omitempty"`
 	FinalState    domain.HandState  `json:"final_state"`
 	Actions       []actionResponse  `json:"actions"`
+	Analytics     replayAnalytics   `json:"analytics"`
+}
+
+type replayAnalytics struct {
+	TotalActions    int                   `json:"total_actions"`
+	FallbackActions int                   `json:"fallback_actions"`
+	ActionsByStreet map[domain.Street]int `json:"actions_by_street,omitempty"`
+	ActionsBySeat   map[domain.SeatNo]int `json:"actions_by_seat,omitempty"`
 }
 
 func NewServer(
@@ -149,7 +157,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case r.Method == http.MethodGet && action == "actions":
 			s.handleActions(w, handID)
 		case r.Method == http.MethodGet && action == "replay":
-			s.handleReplay(w, handID)
+			s.handleReplay(w, r, handID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -433,7 +441,13 @@ func (s *Server) handleActions(w http.ResponseWriter, handID string) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) handleReplay(w http.ResponseWriter, handID string) {
+func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, handID string) {
+	redactHoleCards, err := parseRedactHoleCards(r.URL.Query().Get("redact_hole_cards"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	hand, ok, err := s.repo.GetHand(handID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load hand")
@@ -449,8 +463,24 @@ func (s *Server) handleReplay(w http.ResponseWriter, handID string) {
 		writeError(w, http.StatusInternalServerError, "failed to load actions")
 		return
 	}
+	finalState := cloneHandStateForReplay(hand.FinalState)
+	if redactHoleCards {
+		redactFoldedSeatHoleCards(&finalState)
+	}
+
+	analytics := replayAnalytics{
+		TotalActions:    len(actions),
+		FallbackActions: 0,
+		ActionsByStreet: make(map[domain.Street]int),
+		ActionsBySeat:   make(map[domain.SeatNo]int),
+	}
 	actionItems := make([]actionResponse, 0, len(actions))
 	for _, action := range actions {
+		if action.IsFallback {
+			analytics.FallbackActions++
+		}
+		analytics.ActionsByStreet[action.Street]++
+		analytics.ActionsBySeat[action.ActingSeat]++
 		actionItems = append(actionItems, actionResponse{
 			HandID:     action.HandID,
 			Street:     action.Street,
@@ -470,8 +500,9 @@ func (s *Server) handleReplay(w http.ResponseWriter, handID string) {
 		EndedAt:       hand.EndedAt,
 		FinalPhase:    hand.FinalPhase,
 		WinnerSummary: append([]domain.PotAward(nil), hand.WinnerSummary...),
-		FinalState:    hand.FinalState,
+		FinalState:    finalState,
 		Actions:       actionItems,
+		Analytics:     analytics,
 	})
 }
 
@@ -647,6 +678,70 @@ func parseHandRoute(path string) (handID string, action string, ok bool) {
 		return "", "", false
 	}
 	return parts[1], parts[2], true
+}
+
+func parseRedactHoleCards(raw string) (bool, error) {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return false, nil
+	}
+	switch normalized {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid redact_hole_cards query value %q; expected true or false", raw)
+	}
+}
+
+func cloneHandStateForReplay(state domain.HandState) domain.HandState {
+	cloned := state
+	cloned.Board = append([]domain.Card(nil), state.Board...)
+	cloned.Deck = append([]domain.Card(nil), state.Deck...)
+	cloned.Seats = append([]domain.SeatState(nil), state.Seats...)
+	cloned.ShowdownAwards = clonePotAwardsForReplay(state.ShowdownAwards)
+	if state.LastAggressorSeat != nil {
+		seat := *state.LastAggressorSeat
+		cloned.LastAggressorSeat = &seat
+	}
+	if len(state.HoleCards) > 0 {
+		cloned.HoleCards = make([]domain.SeatCards, 0, len(state.HoleCards))
+		for _, seatCards := range state.HoleCards {
+			cloned.HoleCards = append(cloned.HoleCards, domain.SeatCards{
+				SeatNo: seatCards.SeatNo,
+				Cards:  append([]domain.Card(nil), seatCards.Cards...),
+			})
+		}
+	}
+	return cloned
+}
+
+func clonePotAwardsForReplay(awards []domain.PotAward) []domain.PotAward {
+	if len(awards) == 0 {
+		return nil
+	}
+	out := make([]domain.PotAward, 0, len(awards))
+	for _, award := range awards {
+		cloned := award
+		cloned.Seats = append([]domain.SeatNo(nil), award.Seats...)
+		out = append(out, cloned)
+	}
+	return out
+}
+
+func redactFoldedSeatHoleCards(state *domain.HandState) {
+	folded := make(map[domain.SeatNo]struct{}, len(state.Seats))
+	for _, seat := range state.Seats {
+		if seat.Folded {
+			folded[seat.SeatNo] = struct{}{}
+		}
+	}
+	for i := range state.HoleCards {
+		if _, ok := folded[state.HoleCards[i].SeatNo]; ok {
+			state.HoleCards[i].Cards = []domain.Card{}
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

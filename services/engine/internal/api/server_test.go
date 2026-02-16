@@ -175,6 +175,14 @@ func TestGetReplay_ReturnsHandAndOrderedActions(t *testing.T) {
 		FinalPhase: domain.HandPhaseComplete,
 		FinalState: domain.HandState{
 			HandID: "hand-1", TableID: "table-1", HandNo: 1, Phase: domain.HandPhaseComplete,
+			Seats: []domain.SeatState{
+				{SeatNo: 1, Folded: false, Status: domain.SeatStatusActive},
+				{SeatNo: 2, Folded: true, Status: domain.SeatStatusActive},
+			},
+			HoleCards: []domain.SeatCards{
+				{SeatNo: 1, Cards: []domain.Card{{Rank: 14, Suit: domain.SuitSpades}, {Rank: 13, Suit: domain.SuitSpades}}},
+				{SeatNo: 2, Cards: []domain.Card{{Rank: 2, Suit: domain.SuitClubs}, {Rank: 7, Suit: domain.SuitDiamonds}}},
+			},
 		},
 		WinnerSummary: []domain.PotAward{{Amount: 100, Seats: []domain.SeatNo{1}, Reason: "showdown"}},
 	}); err != nil {
@@ -225,6 +233,87 @@ func TestGetReplay_ReturnsHandAndOrderedActions(t *testing.T) {
 	}
 	if replay.Actions[0].Action != domain.ActionCall || replay.Actions[1].Action != domain.ActionCheck {
 		t.Fatalf("expected ordered actions [call,check], got [%s,%s]", replay.Actions[0].Action, replay.Actions[1].Action)
+	}
+	if replay.Analytics.TotalActions != 2 {
+		t.Fatalf("expected analytics total_actions=2, got %d", replay.Analytics.TotalActions)
+	}
+	if replay.Analytics.FallbackActions != 0 {
+		t.Fatalf("expected analytics fallback_actions=0, got %d", replay.Analytics.FallbackActions)
+	}
+	if replay.Analytics.ActionsByStreet[domain.StreetPreflop] != 1 || replay.Analytics.ActionsByStreet[domain.StreetFlop] != 1 {
+		t.Fatalf("unexpected actions_by_street: %+v", replay.Analytics.ActionsByStreet)
+	}
+	if replay.Analytics.ActionsBySeat[1] != 1 || replay.Analytics.ActionsBySeat[2] != 1 {
+		t.Fatalf("unexpected actions_by_seat: %+v", replay.Analytics.ActionsBySeat)
+	}
+}
+
+func TestGetReplay_RedactHoleCardsRedactsOnlyFoldedSeats(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.UpsertTableRun(persistence.TableRunRecord{
+		TableID:   "table-1",
+		Status:    persistence.TableRunStatusCompleted,
+		StartedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("UpsertTableRun failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:     "hand-1",
+		TableID:    "table-1",
+		HandNo:     1,
+		StartedAt:  now.Add(-30 * time.Second),
+		FinalPhase: domain.HandPhaseComplete,
+		FinalState: domain.HandState{
+			HandID: "hand-1", TableID: "table-1", HandNo: 1, Phase: domain.HandPhaseComplete,
+			Seats: []domain.SeatState{
+				{SeatNo: 1, Folded: false, Status: domain.SeatStatusActive},
+				{SeatNo: 2, Folded: true, Status: domain.SeatStatusActive},
+			},
+			HoleCards: []domain.SeatCards{
+				{SeatNo: 1, Cards: []domain.Card{{Rank: 14, Suit: domain.SuitSpades}, {Rank: 10, Suit: domain.SuitSpades}}},
+				{SeatNo: 2, Cards: []domain.Card{{Rank: 4, Suit: domain.SuitClubs}, {Rank: 8, Suit: domain.SuitClubs}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay?redact_hole_cards=true", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var replay handReplayResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay failed: %v", err)
+	}
+	if len(replay.FinalState.HoleCards) != 2 {
+		t.Fatalf("expected 2 seat hole-card sets, got %d", len(replay.FinalState.HoleCards))
+	}
+	if len(replay.FinalState.HoleCards[0].Cards) != 2 {
+		t.Fatalf("expected non-folded seat cards to remain visible, got %d cards", len(replay.FinalState.HoleCards[0].Cards))
+	}
+	if len(replay.FinalState.HoleCards[1].Cards) != 0 {
+		t.Fatalf("expected folded seat cards to be redacted, got %d cards", len(replay.FinalState.HoleCards[1].Cards))
+	}
+}
+
+func TestGetReplay_InvalidRedactHoleCardsValueReturnsBadRequest(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/hands/hand-1/replay?redact_hole_cards=maybe", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
 	}
 }
 

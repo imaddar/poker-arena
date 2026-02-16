@@ -79,6 +79,12 @@ func TestAgentRun_CompletesAndPersistsHistory(t *testing.T) {
 	if replay.FinalState.HandID != hands[0].HandID {
 		t.Fatalf("expected replay final_state.hand_id %q, got %q", hands[0].HandID, replay.FinalState.HandID)
 	}
+	if replay.Analytics.TotalActions != len(replay.Actions) {
+		t.Fatalf("expected analytics total_actions=%d, got %d", len(replay.Actions), replay.Analytics.TotalActions)
+	}
+	if replay.Analytics.FallbackActions != 0 {
+		t.Fatalf("expected no fallback actions in happy-path replay analytics, got %d", replay.Analytics.FallbackActions)
+	}
 }
 
 func TestAgentRun_TimeoutTriggersFallbackAndPersistsIt(t *testing.T) {
@@ -130,6 +136,10 @@ func TestAgentRun_TimeoutTriggersFallbackAndPersistsIt(t *testing.T) {
 	}
 	if !foundFallback {
 		t.Fatal("expected persisted fallback action record")
+	}
+	replay := getReplay(t, server, token, hands[0].HandID)
+	if replay.Analytics.FallbackActions == 0 {
+		t.Fatal("expected replay analytics to include fallback actions")
 	}
 }
 
