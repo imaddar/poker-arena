@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	ErrTableRunNotFound = errors.New("table run not found")
-	ErrHandNotFound     = errors.New("hand not found")
+	ErrTableRunNotFound  = errors.New("table run not found")
+	ErrHandNotFound      = errors.New("hand not found")
 	ErrHandAlreadyExists = errors.New("hand already exists")
 )
 
@@ -37,26 +37,26 @@ type HandRecord struct {
 }
 
 type ActionRecord struct {
-	HandID      string
-	Street      domain.Street
-	ActingSeat  domain.SeatNo
-	Action      domain.ActionKind
-	Amount      *uint32
-	IsFallback  bool
-	At          time.Time
+	HandID     string
+	Street     domain.Street
+	ActingSeat domain.SeatNo
+	Action     domain.ActionKind
+	Amount     *uint32
+	IsFallback bool
+	At         time.Time
 }
 
 type TableRunRecord struct {
-	TableID         string
-	Status          TableRunStatus
-	StartedAt       time.Time
-	EndedAt         *time.Time
-	Error           string
-	HandsRequested  int
-	HandsCompleted  int
-	TotalActions    int
-	TotalFallbacks  int
-	CurrentHandNo   uint64
+	TableID        string
+	Status         TableRunStatus
+	StartedAt      time.Time
+	EndedAt        *time.Time
+	Error          string
+	HandsRequested int
+	HandsCompleted int
+	TotalActions   int
+	TotalFallbacks int
+	CurrentHandNo  uint64
 }
 
 type Repository interface {
@@ -127,6 +127,9 @@ func (r *inMemoryRepository) CompleteHand(handID string, final HandRecord) error
 func (r *inMemoryRepository) AppendAction(record ActionRecord) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.hands[record.HandID]; !exists {
+		return ErrHandNotFound
+	}
 	r.actions[record.HandID] = append(r.actions[record.HandID], cloneActionRecord(record))
 	return nil
 }

@@ -33,3 +33,28 @@ func TestNewHandStateRejectsDuplicateSeats(t *testing.T) {
 		t.Fatalf("expected ErrDuplicateSeat, got %v", err)
 	}
 }
+
+func TestTableConfigValidateRejectsZeroBlindAmounts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("small blind", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultV0TableConfig()
+		cfg.SmallBlind = 0
+		if err := cfg.Validate(); !errors.Is(err, ErrInvalidBlindAmount) {
+			t.Fatalf("expected ErrInvalidBlindAmount, got %v", err)
+		}
+	})
+
+	t.Run("big blind", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultV0TableConfig()
+		cfg.SmallBlind = 0
+		cfg.BigBlind = 0
+		if err := cfg.Validate(); !errors.Is(err, ErrInvalidBlindAmount) {
+			t.Fatalf("expected ErrInvalidBlindAmount, got %v", err)
+		}
+	})
+}
