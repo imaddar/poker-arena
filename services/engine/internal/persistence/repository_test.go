@@ -48,6 +48,9 @@ func TestInMemoryRepository_AppendAndListActionsPreserveInsertionOrder(t *testin
 	t.Parallel()
 
 	repo := NewInMemoryRepository()
+	if err := repo.CreateHand(HandRecord{HandID: "h1", TableID: "t1", HandNo: 1, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
 	for i := 0; i < 3; i++ {
 		if err := repo.AppendAction(ActionRecord{
 			HandID:     "h1",
@@ -97,10 +100,10 @@ func TestInMemoryRepository_CompleteHandUpdatesFinalState(t *testing.T) {
 		EndedAt:    &ended,
 		FinalPhase: domain.HandPhaseComplete,
 		FinalState: domain.HandState{
-			HandID: "h1",
-			TableID: "t1",
-			HandNo: 1,
-			Phase: domain.HandPhaseComplete,
+			HandID:         "h1",
+			TableID:        "t1",
+			HandNo:         1,
+			Phase:          domain.HandPhaseComplete,
 			ShowdownAwards: []domain.PotAward{{Amount: 100, Seats: []domain.SeatNo{1}}},
 		},
 		WinnerSummary: []domain.PotAward{{Amount: 100, Seats: []domain.SeatNo{1}, Reason: "showdown"}},
@@ -169,10 +172,30 @@ func TestInMemoryRepository_UpsertAndGetTableRun(t *testing.T) {
 	}
 }
 
+func TestInMemoryRepository_AppendActionRequiresExistingHand(t *testing.T) {
+	t.Parallel()
+
+	repo := NewInMemoryRepository()
+	err := repo.AppendAction(ActionRecord{
+		HandID:     "missing",
+		ActingSeat: 1,
+		Action:     domain.ActionCheck,
+		At:         time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatal("expected error for missing hand")
+	}
+	if err != ErrHandNotFound {
+		t.Fatalf("expected ErrHandNotFound, got %v", err)
+	}
+}
 func TestInMemoryRepository_ConcurrentAppendAndReadIsSafe(t *testing.T) {
 	t.Parallel()
 
 	repo := NewInMemoryRepository()
+	if err := repo.CreateHand(HandRecord{HandID: "h1", TableID: "table-1", HandNo: 1, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
 	var wg sync.WaitGroup
 
 	for i := 0; i < 100; i++ {
@@ -207,4 +230,3 @@ func TestInMemoryRepository_ConcurrentAppendAndReadIsSafe(t *testing.T) {
 		t.Fatalf("expected 100 actions, got %d", len(actions))
 	}
 }
-

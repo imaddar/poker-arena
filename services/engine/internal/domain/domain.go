@@ -19,6 +19,7 @@ const (
 var (
 	ErrInvalidMinPlayersToStart = errors.New("min players to start must be at least 2 and <= max seats")
 	ErrInvalidBlindStructure    = errors.New("big blind must be greater than or equal to small blind")
+	ErrInvalidBlindAmount       = errors.New("small blind and big blind must both be greater than zero")
 	ErrDuplicateSeat            = errors.New("duplicate seat numbers are not allowed")
 )
 
@@ -178,6 +179,10 @@ func (c TableConfig) Validate() error {
 
 	if c.BigBlind < c.SmallBlind {
 		return ErrInvalidBlindStructure
+	}
+
+	if c.SmallBlind == 0 || c.BigBlind == 0 {
+		return ErrInvalidBlindAmount
 	}
 
 	return nil

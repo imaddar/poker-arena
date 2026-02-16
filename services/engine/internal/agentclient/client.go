@@ -20,6 +20,7 @@ const (
 	ProtocolVersion      = 1
 	defaultTimeout       = 2 * time.Second
 	defaultActionTimeout = uint64(2000)
+	maxResponseBodyBytes = 1 << 20
 )
 
 var (
@@ -108,9 +109,16 @@ func (c Client) NextAction(ctx context.Context, req Request) (domain.Action, err
 		return domain.Action{}, fmt.Errorf("%w: status %d", ErrNetwork, resp.StatusCode)
 	}
 
+	limitedBody := io.LimitReader(resp.Body, maxResponseBodyBytes+1)
+	decoder := json.NewDecoder(limitedBody)
+
 	var dto protocolResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
+	if err := decoder.Decode(&dto); err != nil {
 		return domain.Action{}, fmt.Errorf("%w: decode: %v", ErrMalformedResponse, err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return domain.Action{}, fmt.Errorf("%w: response body has trailing data", ErrMalformedResponse)
 	}
 
 	action, err := parseAndValidateProtocolResponse(dto, legalActionSet)

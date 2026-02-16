@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,6 +20,11 @@ import (
 // TODO(postgres): Replace the in-memory repository with a Postgres-backed implementation and migrations.
 // TODO(auth): Add bearer-token middleware and align endpoint auth with the broader service model.
 // TODO(logging): Add structured run/request lifecycle logging and persistence error telemetry.
+
+const (
+	maxStartRequestBodyBytes = 1 << 20
+	stopWaitTimeout          = 5 * time.Second
+)
 
 type Runner interface {
 	RunTable(ctx context.Context, input tablerunner.RunTableInput) (tablerunner.RunTableResult, error)
@@ -145,8 +151,26 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 		return
 	}
 
+	body := http.MaxBytesReader(w, r.Body, maxStartRequestBodyBytes)
+	defer body.Close()
+
 	var req StartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -285,7 +309,12 @@ func (s *Server) handleStop(w http.ResponseWriter, tableID string) {
 	}
 
 	run.cancel()
-	<-run.done
+	select {
+	case <-run.done:
+	case <-time.After(stopWaitTimeout):
+		writeError(w, http.StatusGatewayTimeout, "timed out waiting for table to stop")
+		return
+	}
 
 	status, ok, err := s.repo.GetTableRun(tableID)
 	if err != nil {
@@ -474,6 +503,9 @@ func validateStartRequest(tableID string, req StartRequest, serverCfg ServerConf
 		seen[seatNo] = struct{}{}
 		seatState := domain.NewSeatState(seatNo, seat.Stack)
 		if seat.Status != "" {
+			if !isSeatStatusAllowed(seat.Status) {
+				return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("invalid seat status %q for seat %d", seat.Status, seatNo)
+			}
 			seatState.Status = seat.Status
 		}
 		if isSeatActiveForStart(seat.Status) {
@@ -519,6 +551,15 @@ func validateStartRequest(tableID string, req StartRequest, serverCfg ServerConf
 
 func isSeatActiveForStart(status domain.SeatStatus) bool {
 	return status == "" || status == domain.SeatStatusActive
+}
+
+func isSeatStatusAllowed(status domain.SeatStatus) bool {
+	switch status {
+	case domain.SeatStatusActive, domain.SeatStatusSittingOut, domain.SeatStatusBusted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) authorized(r *http.Request) bool {

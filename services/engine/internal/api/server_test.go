@@ -95,6 +95,14 @@ func TestGetActions_ReturnsPersistedActionsForHand(t *testing.T) {
 
 	repo := persistence.NewInMemoryRepository()
 	now := time.Now().UTC()
+	for _, hand := range []persistence.HandRecord{
+		{HandID: "hand-1", TableID: "table-1", HandNo: 1, StartedAt: now.Add(-2 * time.Minute)},
+		{HandID: "hand-2", TableID: "table-1", HandNo: 2, StartedAt: now.Add(-1 * time.Minute)},
+	} {
+		if err := repo.CreateHand(hand); err != nil {
+			t.Fatalf("CreateHand failed: %v", err)
+		}
+	}
 	if err := repo.AppendAction(persistence.ActionRecord{
 		HandID:     "hand-1",
 		Street:     domain.StreetPreflop,
@@ -298,6 +306,37 @@ func TestStartRejectsMalformedAgentEndpoint(t *testing.T) {
 	}
 }
 
+func TestStartRejectsInvalidSeatStatus(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{
+			AuthBearerToken:   "secret",
+			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{
+		"hands_to_run": 1,
+		"seats": [
+			{"seat_no": 1, "stack": 10000, "status": "broken", "agent_endpoint": "http://agent.local:9001/callback"},
+			{"seat_no": 2, "stack": 10000, "status": "active", "agent_endpoint": "http://agent.local:9002/callback"}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
 func TestStartRejectsDisallowedAgentHost(t *testing.T) {
 	t.Parallel()
 
@@ -357,6 +396,32 @@ func TestStartAcceptsValidAgentEndpoints(t *testing.T) {
 	server.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestStartRejectsOversizedRequestBody(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{AuthBearerToken: "secret"},
+	)
+
+	prefix := `{"hands_to_run":1,"seats":[{"seat_no":1,"stack":10000,"status":"active","agent_endpoint":"http://agent.local/callback","padding":"`
+	padding := strings.Repeat("x", maxStartRequestBodyBytes)
+	body := prefix + padding + `"},{"seat_no":2,"stack":10000,"status":"active","agent_endpoint":"http://agent.local/callback"}]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusRequestEntityTooLarge, w.Code, w.Body.String())
 	}
 }
 

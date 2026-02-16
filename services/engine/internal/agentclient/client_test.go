@@ -232,6 +232,27 @@ func TestClientNextActionMalformedResponse(t *testing.T) {
 	}
 }
 
+func TestClientNextActionRejectsTrailingResponseData(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"action":"check"} {"extra":true}`))
+	}))
+	defer server.Close()
+
+	state := baseState(t)
+	client := New(2 * time.Second)
+	_, err := client.NextAction(context.Background(), Request{
+		EndpointURL:     server.URL,
+		State:           state,
+		ActingSeat:      mustSeatNo(t, 1),
+		ActionTimeoutMS: 2000,
+	})
+	if !errors.Is(err, ErrMalformedResponse) {
+		t.Fatalf("expected ErrMalformedResponse, got %v", err)
+	}
+}
+
 func TestClientNextActionNon200Status(t *testing.T) {
 	t.Parallel()
 
