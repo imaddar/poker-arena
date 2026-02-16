@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE_DIR="${ROOT_DIR}/services/engine"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
 TABLE_ID="${TABLE_ID:-local-table-1}"
-API_TOKEN="${API_TOKEN:-}"
+ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-}"
+SEAT_API_TOKEN="${SEAT_API_TOKEN:-}"
 AGENT_ENDPOINTS="${AGENT_ENDPOINTS:-}"
 
 if ! command -v go >/dev/null 2>&1; then
@@ -23,12 +24,14 @@ Commands:
   status                         Get table status
   hands                          List persisted hands for table
   actions <hand_id>              List persisted actions for a hand
+  replay <hand_id>               Get replay payload for a hand
   stop                           Stop the current table run
 
 Environment:
   BASE_URL   API base URL (default: http://127.0.0.1:8080)
   TABLE_ID   Table ID to target (default: local-table-1)
-  API_TOKEN  Bearer token for control-plane requests (required for API calls)
+  ADMIN_API_TOKEN  Bearer token for control routes (required for start/status/stop)
+  SEAT_API_TOKEN   Bearer token for history routes; falls back to ADMIN_API_TOKEN
   AGENT_ENDPOINTS Comma-separated endpoints by seat order for start (required for start)
 USAGE
 }
@@ -58,12 +61,21 @@ build_seats_json() {
   printf '%s' "${out}"
 }
 
-api_auth_header() {
-  if [[ -z "${API_TOKEN}" ]]; then
-    echo "error: API_TOKEN is required for control-plane API commands" >&2
+admin_auth_header() {
+  if [[ -z "${ADMIN_API_TOKEN}" ]]; then
+    echo "error: ADMIN_API_TOKEN is required for control-plane admin commands" >&2
     exit 1
   fi
-  printf 'Authorization: Bearer %s' "${API_TOKEN}"
+  printf 'Authorization: Bearer %s' "${ADMIN_API_TOKEN}"
+}
+
+history_auth_header() {
+  local token="${SEAT_API_TOKEN:-${ADMIN_API_TOKEN}}"
+  if [[ -z "${token}" ]]; then
+    echo "error: set SEAT_API_TOKEN or ADMIN_API_TOKEN for history commands" >&2
+    exit 1
+  fi
+  printf 'Authorization: Bearer %s' "${token}"
 }
 
 cmd="${1:-}"
@@ -98,18 +110,18 @@ case "${cmd}" in
     curl -sS \
       -X POST "${BASE_URL}/tables/${TABLE_ID}/start" \
       -H "Content-Type: application/json" \
-      -H "$(api_auth_header)" \
+      -H "$(admin_auth_header)" \
       -d "{\"hands_to_run\":${hands},\"seats\":[${seats_json}]}"
     echo
     ;;
 
   status)
-    curl -sS "${BASE_URL}/tables/${TABLE_ID}/status" -H "$(api_auth_header)"
+    curl -sS "${BASE_URL}/tables/${TABLE_ID}/status" -H "$(admin_auth_header)"
     echo
     ;;
 
   hands)
-    curl -sS "${BASE_URL}/tables/${TABLE_ID}/hands" -H "$(api_auth_header)"
+    curl -sS "${BASE_URL}/tables/${TABLE_ID}/hands" -H "$(history_auth_header)"
     echo
     ;;
 
@@ -119,12 +131,22 @@ case "${cmd}" in
       echo "error: actions requires <hand_id>" >&2
       exit 1
     fi
-    curl -sS "${BASE_URL}/hands/${hand_id}/actions" -H "$(api_auth_header)"
+    curl -sS "${BASE_URL}/hands/${hand_id}/actions" -H "$(history_auth_header)"
+    echo
+    ;;
+
+  replay)
+    hand_id="${1:-}"
+    if [[ -z "${hand_id}" ]]; then
+      echo "error: replay requires <hand_id>" >&2
+      exit 1
+    fi
+    curl -sS "${BASE_URL}/hands/${hand_id}/replay" -H "$(history_auth_header)"
     echo
     ;;
 
   stop)
-    curl -sS -X POST "${BASE_URL}/tables/${TABLE_ID}/stop" -H "$(api_auth_header)"
+    curl -sS -X POST "${BASE_URL}/tables/${TABLE_ID}/stop" -H "$(admin_auth_header)"
     echo
     ;;
 

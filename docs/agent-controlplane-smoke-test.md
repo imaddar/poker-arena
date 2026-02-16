@@ -142,7 +142,8 @@ go run /tmp/mock-agent-b.go
 ```bash
 cd /Users/imaddar/git-repos/poker-arena
 
-export CONTROLPLANE_BEARER_TOKEN="local-dev-token"
+export CONTROLPLANE_ADMIN_TOKENS="local-admin-token"
+export CONTROLPLANE_SEAT_TOKENS="1:local-seat-1-token,2:local-seat-2-token"
 export AGENT_ENDPOINT_ALLOWLIST="127.0.0.1:9001,127.0.0.1:9002"
 export AGENT_HTTP_TIMEOUT_MS="2000"
 export DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/poker_arena?sslmode=disable"
@@ -157,7 +158,8 @@ cd /Users/imaddar/git-repos/poker-arena
 
 export BASE_URL="http://127.0.0.1:8080"
 export TABLE_ID="smoke-table-1"
-export API_TOKEN="local-dev-token"
+export ADMIN_API_TOKEN="local-admin-token"
+export SEAT_API_TOKEN="local-seat-1-token"
 export AGENT_ENDPOINTS="http://127.0.0.1:9001/callback,http://127.0.0.1:9002/callback"
 
 # start 2 hands with 2 players
@@ -175,8 +177,7 @@ sleep 1
 ./scripts/api-local.sh actions <hand_id>
 
 # fetch full replay payload for the same hand
-curl -sS "${BASE_URL}/hands/<hand_id>/replay" \
-  -H "Authorization: Bearer ${API_TOKEN}"
+./scripts/api-local.sh replay <hand_id>
 ```
 
 Expected outcome:
