@@ -10,6 +10,8 @@ import (
 var (
 	//go:embed migrations/0001_init.up.sql
 	migration0001Up string
+	//go:embed migrations/0002_resources.up.sql
+	migration0002Up string
 )
 
 func MigratePostgres(ctx context.Context, db *sql.DB) error {
@@ -27,6 +29,9 @@ func MigratePostgres(ctx context.Context, db *sql.DB) error {
 
 	if _, err := db.ExecContext(ctx, migration0001Up); err != nil {
 		return fmt.Errorf("apply migration 0001_init.up.sql: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, migration0002Up); err != nil {
+		return fmt.Errorf("apply migration 0002_resources.up.sql: %w", err)
 	}
 	return nil
 }

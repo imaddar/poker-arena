@@ -305,6 +305,217 @@ ORDER BY id ASC
 	return out, nil
 }
 
+func (r *postgresRepository) CreateUser(record UserRecord) error {
+	const q = `
+INSERT INTO users (id, name, token, created_at)
+VALUES ($1,$2,$3,$4)
+`
+	_, err := r.db.ExecContext(context.Background(), q,
+		record.ID,
+		record.Name,
+		record.Token,
+		record.CreatedAt,
+	)
+	return err
+}
+
+func (r *postgresRepository) CreateAgent(record AgentRecord) error {
+	const q = `
+INSERT INTO agents (id, user_id, name, created_at)
+VALUES ($1,$2,$3,$4)
+`
+	_, err := r.db.ExecContext(context.Background(), q,
+		record.ID,
+		record.UserID,
+		record.Name,
+		record.CreatedAt,
+	)
+	if isForeignKeyViolation(err) {
+		return ErrUserNotFound
+	}
+	return err
+}
+
+func (r *postgresRepository) CreateAgentVersion(record AgentVersionRecord) error {
+	const q = `
+INSERT INTO agent_versions (id, agent_id, version, endpoint_url, config_json, created_at)
+VALUES ($1,$2,$3,$4,$5,$6)
+`
+	_, err := r.db.ExecContext(context.Background(), q,
+		record.ID,
+		record.AgentID,
+		record.Version,
+		record.EndpointURL,
+		record.ConfigJSON,
+		record.CreatedAt,
+	)
+	if isForeignKeyViolation(err) {
+		return ErrAgentNotFound
+	}
+	if isUniqueViolation(err) {
+		return ErrAgentVersionExists
+	}
+	return err
+}
+
+func (r *postgresRepository) CreateTable(record TableRecord) error {
+	const q = `
+INSERT INTO tables (id, name, max_seats, small_blind, big_blind, status, created_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7)
+`
+	_, err := r.db.ExecContext(context.Background(), q,
+		record.ID,
+		record.Name,
+		int16(record.MaxSeats),
+		int32(record.SmallBlind),
+		int32(record.BigBlind),
+		record.Status,
+		record.CreatedAt,
+	)
+	return err
+}
+
+func (r *postgresRepository) UpsertSeat(record SeatRecord) error {
+	version, ok, err := r.GetAgentVersion(record.AgentVersionID)
+	if err != nil {
+		return err
+	}
+	if !ok || version.AgentID != record.AgentID {
+		return ErrAgentVersionNotFound
+	}
+
+	const q = `
+INSERT INTO seats (id, table_id, seat_no, agent_id, agent_version_id, stack, status, created_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT (table_id, seat_no) DO UPDATE SET
+  id = EXCLUDED.id,
+  agent_id = EXCLUDED.agent_id,
+  agent_version_id = EXCLUDED.agent_version_id,
+  stack = EXCLUDED.stack,
+  status = EXCLUDED.status,
+  created_at = EXCLUDED.created_at
+`
+	_, err = r.db.ExecContext(context.Background(), q,
+		record.ID,
+		record.TableID,
+		int16(record.SeatNo),
+		record.AgentID,
+		record.AgentVersionID,
+		int32(record.Stack),
+		string(record.Status),
+		record.CreatedAt,
+	)
+	if isForeignKeyViolation(err) {
+		if strings.Contains(err.Error(), "table_id") {
+			return ErrTableNotFound
+		}
+		if strings.Contains(err.Error(), "agent_id") {
+			return ErrAgentNotFound
+		}
+		if strings.Contains(err.Error(), "agent_version_id") {
+			return ErrAgentVersionNotFound
+		}
+	}
+	return err
+}
+
+func (r *postgresRepository) GetTable(tableID string) (TableRecord, bool, error) {
+	const q = `
+SELECT id, name, max_seats, small_blind, big_blind, status, created_at
+FROM tables
+WHERE id = $1
+`
+	var rec TableRecord
+	var maxSeats int16
+	var smallBlind int32
+	var bigBlind int32
+	err := r.db.QueryRowContext(context.Background(), q, tableID).Scan(
+		&rec.ID,
+		&rec.Name,
+		&maxSeats,
+		&smallBlind,
+		&bigBlind,
+		&rec.Status,
+		&rec.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TableRecord{}, false, nil
+	}
+	if err != nil {
+		return TableRecord{}, false, err
+	}
+	rec.MaxSeats = uint8(maxSeats)
+	rec.SmallBlind = uint32(smallBlind)
+	rec.BigBlind = uint32(bigBlind)
+	return rec, true, nil
+}
+
+func (r *postgresRepository) ListSeats(tableID string) ([]SeatRecord, error) {
+	const q = `
+SELECT id, table_id, seat_no, agent_id, agent_version_id, stack, status, created_at
+FROM seats
+WHERE table_id = $1
+ORDER BY seat_no ASC
+`
+	rows, err := r.db.QueryContext(context.Background(), q, tableID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]SeatRecord, 0, 8)
+	for rows.Next() {
+		var rec SeatRecord
+		var seatNo int16
+		var stack int32
+		if err := rows.Scan(
+			&rec.ID,
+			&rec.TableID,
+			&seatNo,
+			&rec.AgentID,
+			&rec.AgentVersionID,
+			&stack,
+			&rec.Status,
+			&rec.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		rec.SeatNo = domain.SeatNo(seatNo)
+		rec.Stack = uint32(stack)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *postgresRepository) GetAgentVersion(versionID string) (AgentVersionRecord, bool, error) {
+	const q = `
+SELECT id, agent_id, version, endpoint_url, config_json, created_at
+FROM agent_versions
+WHERE id = $1
+`
+	var rec AgentVersionRecord
+	var config []byte
+	err := r.db.QueryRowContext(context.Background(), q, versionID).Scan(
+		&rec.ID,
+		&rec.AgentID,
+		&rec.Version,
+		&rec.EndpointURL,
+		&config,
+		&rec.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentVersionRecord{}, false, nil
+	}
+	if err != nil {
+		return AgentVersionRecord{}, false, err
+	}
+	rec.ConfigJSON = append([]byte(nil), config...)
+	return rec, true, nil
+}
+
 func isUniqueViolation(err error) bool {
 	return hasSQLState(err, "23505")
 }

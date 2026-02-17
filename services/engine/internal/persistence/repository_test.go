@@ -17,6 +17,14 @@ func TestInMemoryRepository_Contract(t *testing.T) {
 	})
 }
 
+func TestInMemoryRepository_ResourcesContract(t *testing.T) {
+	t.Parallel()
+	runRepositoryResourcesContractTests(t, func(t *testing.T) Repository {
+		t.Helper()
+		return NewInMemoryRepository()
+	})
+}
+
 func TestInMemoryRepository_CreateAndListHandsOrderedByHandNo(t *testing.T) {
 	t.Parallel()
 

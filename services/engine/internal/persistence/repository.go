@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -10,9 +11,14 @@ import (
 )
 
 var (
-	ErrTableRunNotFound  = errors.New("table run not found")
-	ErrHandNotFound      = errors.New("hand not found")
-	ErrHandAlreadyExists = errors.New("hand already exists")
+	ErrTableRunNotFound     = errors.New("table run not found")
+	ErrHandNotFound         = errors.New("hand not found")
+	ErrHandAlreadyExists    = errors.New("hand already exists")
+	ErrUserNotFound         = errors.New("user not found")
+	ErrAgentNotFound        = errors.New("agent not found")
+	ErrAgentVersionExists   = errors.New("agent version already exists")
+	ErrAgentVersionNotFound = errors.New("agent version not found")
+	ErrTableNotFound        = errors.New("table not found")
 )
 
 type TableRunStatus string
@@ -59,6 +65,50 @@ type TableRunRecord struct {
 	CurrentHandNo  uint64
 }
 
+type UserRecord struct {
+	ID        string
+	Name      string
+	Token     string
+	CreatedAt time.Time
+}
+
+type AgentRecord struct {
+	ID        string
+	UserID    string
+	Name      string
+	CreatedAt time.Time
+}
+
+type AgentVersionRecord struct {
+	ID          string
+	AgentID     string
+	Version     int
+	EndpointURL string
+	ConfigJSON  json.RawMessage
+	CreatedAt   time.Time
+}
+
+type TableRecord struct {
+	ID         string
+	Name       string
+	MaxSeats   uint8
+	SmallBlind uint32
+	BigBlind   uint32
+	Status     string
+	CreatedAt  time.Time
+}
+
+type SeatRecord struct {
+	ID             string
+	TableID        string
+	SeatNo         domain.SeatNo
+	AgentID        string
+	AgentVersionID string
+	Stack          uint32
+	Status         domain.SeatStatus
+	CreatedAt      time.Time
+}
+
 type Repository interface {
 	UpsertTableRun(record TableRunRecord) error
 	GetTableRun(tableID string) (TableRunRecord, bool, error)
@@ -68,6 +118,14 @@ type Repository interface {
 	AppendAction(record ActionRecord) error
 	ListHands(tableID string) ([]HandRecord, error)
 	ListActions(handID string) ([]ActionRecord, error)
+	CreateUser(record UserRecord) error
+	CreateAgent(record AgentRecord) error
+	CreateAgentVersion(record AgentVersionRecord) error
+	CreateTable(record TableRecord) error
+	UpsertSeat(record SeatRecord) error
+	GetTable(tableID string) (TableRecord, bool, error)
+	ListSeats(tableID string) ([]SeatRecord, error)
+	GetAgentVersion(versionID string) (AgentVersionRecord, bool, error)
 }
 
 type inMemoryRepository struct {
@@ -76,6 +134,11 @@ type inMemoryRepository struct {
 	tableRuns map[string]TableRunRecord
 	hands     map[string]HandRecord
 	actions   map[string][]ActionRecord
+	users     map[string]UserRecord
+	agents    map[string]AgentRecord
+	versions  map[string]AgentVersionRecord
+	tables    map[string]TableRecord
+	seats     map[string]map[domain.SeatNo]SeatRecord
 }
 
 func NewInMemoryRepository() Repository {
@@ -83,6 +146,11 @@ func NewInMemoryRepository() Repository {
 		tableRuns: make(map[string]TableRunRecord),
 		hands:     make(map[string]HandRecord),
 		actions:   make(map[string][]ActionRecord),
+		users:     make(map[string]UserRecord),
+		agents:    make(map[string]AgentRecord),
+		versions:  make(map[string]AgentVersionRecord),
+		tables:    make(map[string]TableRecord),
+		seats:     make(map[string]map[domain.SeatNo]SeatRecord),
 	}
 }
 
@@ -175,6 +243,105 @@ func (r *inMemoryRepository) ListActions(handID string) ([]ActionRecord, error) 
 	return out, nil
 }
 
+func (r *inMemoryRepository) CreateUser(record UserRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users[record.ID] = cloneUserRecord(record)
+	return nil
+}
+
+func (r *inMemoryRepository) CreateAgent(record AgentRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.users[record.UserID]; !exists {
+		return ErrUserNotFound
+	}
+	r.agents[record.ID] = cloneAgentRecord(record)
+	return nil
+}
+
+func (r *inMemoryRepository) CreateAgentVersion(record AgentVersionRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.agents[record.AgentID]; !exists {
+		return ErrAgentNotFound
+	}
+	for _, version := range r.versions {
+		if version.AgentID == record.AgentID && version.Version == record.Version {
+			return ErrAgentVersionExists
+		}
+	}
+	r.versions[record.ID] = cloneAgentVersionRecord(record)
+	return nil
+}
+
+func (r *inMemoryRepository) CreateTable(record TableRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tables[record.ID] = cloneTableRecord(record)
+	return nil
+}
+
+func (r *inMemoryRepository) UpsertSeat(record SeatRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tables[record.TableID]; !exists {
+		return ErrTableNotFound
+	}
+	if _, exists := r.agents[record.AgentID]; !exists {
+		return ErrAgentNotFound
+	}
+	version, exists := r.versions[record.AgentVersionID]
+	if !exists {
+		return ErrAgentVersionNotFound
+	}
+	if version.AgentID != record.AgentID {
+		return ErrAgentVersionNotFound
+	}
+	if _, exists := r.seats[record.TableID]; !exists {
+		r.seats[record.TableID] = make(map[domain.SeatNo]SeatRecord)
+	}
+	r.seats[record.TableID][record.SeatNo] = cloneSeatRecord(record)
+	return nil
+}
+
+func (r *inMemoryRepository) GetTable(tableID string) (TableRecord, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.tables[tableID]
+	if !ok {
+		return TableRecord{}, false, nil
+	}
+	return cloneTableRecord(record), true, nil
+}
+
+func (r *inMemoryRepository) ListSeats(tableID string) ([]SeatRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tableSeats, ok := r.seats[tableID]
+	if !ok {
+		return []SeatRecord{}, nil
+	}
+	out := make([]SeatRecord, 0, len(tableSeats))
+	for _, seat := range tableSeats {
+		out = append(out, cloneSeatRecord(seat))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].SeatNo < out[j].SeatNo
+	})
+	return out, nil
+}
+
+func (r *inMemoryRepository) GetAgentVersion(versionID string) (AgentVersionRecord, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.versions[versionID]
+	if !ok {
+		return AgentVersionRecord{}, false, nil
+	}
+	return cloneAgentVersionRecord(record), true, nil
+}
+
 func cloneTableRunRecord(record TableRunRecord) TableRunRecord {
 	out := record
 	if record.EndedAt != nil {
@@ -237,4 +404,26 @@ func cloneHandState(state domain.HandState) domain.HandState {
 		}
 	}
 	return cloned
+}
+
+func cloneUserRecord(record UserRecord) UserRecord {
+	return record
+}
+
+func cloneAgentRecord(record AgentRecord) AgentRecord {
+	return record
+}
+
+func cloneAgentVersionRecord(record AgentVersionRecord) AgentVersionRecord {
+	out := record
+	out.ConfigJSON = append([]byte(nil), record.ConfigJSON...)
+	return out
+}
+
+func cloneTableRecord(record TableRecord) TableRecord {
+	return record
+}
+
+func cloneSeatRecord(record SeatRecord) SeatRecord {
+	return record
 }

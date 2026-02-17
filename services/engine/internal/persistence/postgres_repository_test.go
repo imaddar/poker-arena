@@ -22,6 +22,16 @@ func TestPostgresRepository_Contract(t *testing.T) {
 	})
 }
 
+func TestPostgresRepository_ResourcesContract(t *testing.T) {
+	runRepositoryResourcesContractTests(t, func(t *testing.T) Repository {
+		t.Helper()
+		db := openTestPostgresDB(t)
+		repo := NewPostgresRepository(db)
+		resetPostgresTables(t, db)
+		return repo
+	})
+}
+
 func TestPostgresRepository_CreateHandDuplicateReturnsErrHandAlreadyExists(t *testing.T) {
 	db := openTestPostgresDB(t)
 	repo := NewPostgresRepository(db)
@@ -164,7 +174,7 @@ func resetPostgresTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, `TRUNCATE TABLE actions, hands, table_runs RESTART IDENTITY CASCADE`); err != nil {
+	if _, err := db.ExecContext(ctx, `TRUNCATE TABLE actions, hands, table_runs, seats, tables, agent_versions, agents, users RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate tables failed: %v", err)
 	}
 }
