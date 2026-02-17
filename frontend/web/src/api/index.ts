@@ -1,14 +1,13 @@
 import { createHttpApiClient } from './client';
+import { resolveApiRuntimeConfig } from './config';
 import { createMockApi } from './mock';
 import type { ApiClient } from './types';
 
-const useMock = String(import.meta.env.VITE_USE_MOCK_API ?? '').toLowerCase() === 'true';
-const adminToken = String(import.meta.env.VITE_ADMIN_TOKEN ?? '');
-const baseUrl = String(import.meta.env.VITE_API_BASE_URL ?? '');
+const cfg = resolveApiRuntimeConfig(import.meta.env);
 
-export const api: ApiClient = useMock
+export const api: ApiClient = cfg.useMock
   ? createMockApi()
   : createHttpApiClient({
-      baseUrl,
-      getToken: () => adminToken,
+      baseUrl: cfg.baseUrl,
+      getToken: () => cfg.adminToken,
     });

@@ -8,6 +8,7 @@ The app can run against the mock API or the engine control-plane API.
 
 - `VITE_USE_MOCK_API=true` uses the in-memory mock API.
 - `VITE_USE_MOCK_API=false` uses HTTP client mode.
+- If `VITE_USE_MOCK_API` is unset, the app defaults to mock mode.
 - `VITE_API_BASE_URL` sets the backend base URL in HTTP client mode.
 - `VITE_ADMIN_TOKEN` sets the bearer token used by HTTP client mode.
 
