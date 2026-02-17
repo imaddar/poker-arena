@@ -1,5 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-import type { ApiClient } from './types';
+import type { ApiClient, HandSummary } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -219,6 +219,31 @@ class MockApi implements ApiClient {
     }
 
     return state;
+  }
+
+  async getTableHands(tableId: string): Promise<HandSummary[]> {
+    await delay(100);
+    const state = this.tableState.get(tableId);
+    if (!state) {
+      return [];
+    }
+    return [
+      {
+        handId: state.handId,
+        handNo: 1,
+      },
+    ];
+  }
+
+  async getHandActions(_handId: string): Promise<string[]> {
+    await delay(100);
+    // Mock mode uses the current table state's in-memory action log.
+    for (const state of this.tableState.values()) {
+      if (state.actionLog.length > 0) {
+        return [...state.actionLog];
+      }
+    }
+    return [];
   }
 
   async submitAction(tableId: string, action: ActionRequest): Promise<GameState> {

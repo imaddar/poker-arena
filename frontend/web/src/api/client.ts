@@ -1,5 +1,5 @@
 import type { ActionRequest, GameState, Player, Table, User } from '../types';
-import type { ApiClient } from './types';
+import type { ApiClient, HandSummary } from './types';
 
 interface HttpApiClientOptions {
   baseUrl: string;
@@ -24,6 +24,20 @@ interface SeatDTO {
 interface TableStateDTO {
   table: TableDTO;
   seats: SeatDTO[];
+}
+
+interface HandDTO {
+  hand_id: string;
+  hand_no: number;
+  ended_at?: string;
+}
+
+interface ActionDTO {
+  street: string;
+  acting_seat: number;
+  action: string;
+  amount?: number;
+  is_fallback: boolean;
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -146,6 +160,24 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
     async getTableState(tableId: string): Promise<GameState> {
       const state = await request<TableStateDTO>(`/tables/${tableId}/state`, { method: 'GET' });
       return mapTableState(state);
+    },
+
+    async getTableHands(tableId: string): Promise<HandSummary[]> {
+      const hands = await request<HandDTO[]>(`/tables/${tableId}/hands`, { method: 'GET' });
+      return hands.map((item) => ({
+        handId: item.hand_id,
+        handNo: item.hand_no,
+        endedAt: item.ended_at,
+      }));
+    },
+
+    async getHandActions(handId: string): Promise<string[]> {
+      const actions = await request<ActionDTO[]>(`/hands/${handId}/actions`, { method: 'GET' });
+      return actions.map((item) => {
+        const amount = item.amount == null ? '' : ` ${item.amount}`;
+        const fallback = item.is_fallback ? ' (fallback)' : '';
+        return `${item.street.toUpperCase()} S${item.acting_seat}: ${item.action.toUpperCase()}${amount}${fallback}`;
+      });
     },
 
     async submitAction(tableId: string, _action: ActionRequest): Promise<GameState> {

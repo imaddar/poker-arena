@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api';
+import { resolveApiRuntimeConfig } from '../api/config';
 import { PokerTable } from '../components/PokerTable';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
@@ -10,6 +11,7 @@ import type { ActionType, GameState } from '../types';
 export function Game() {
   const { tableId } = useParams<{ tableId: string }>();
   const navigate = useNavigate();
+  const isMockMode = resolveApiRuntimeConfig(import.meta.env).useMock;
 
   const [state, setState] = useState<GameState | null>(null);
   const [raiseAmount, setRaiseAmount] = useState(0);
@@ -27,6 +29,17 @@ export function Game() {
 
     try {
       const nextState = await api.getTableState(tableId);
+      if (!isMockMode) {
+        const hands = await api.getTableHands(tableId);
+        if (hands.length > 0) {
+          const latest = hands[hands.length - 1];
+          const log = await api.getHandActions(latest.handId);
+          nextState.actionLog = log;
+          nextState.handId = latest.handId;
+        } else {
+          nextState.actionLog = ['No hands recorded for this table yet.'];
+        }
+      }
       setState(nextState);
       setRaiseAmount(
         clampRaiseAmount({
@@ -51,6 +64,10 @@ export function Game() {
 
   const handleAction = async (type: ActionType, amount?: number) => {
     if (!tableId || !state) {
+      return;
+    }
+    if (!isMockMode) {
+      setError('Observer mode: actions are disabled for backend-backed tables.');
       return;
     }
 
@@ -101,6 +118,7 @@ export function Game() {
       </header>
 
       {error && <p className="error-text">{error}</p>}
+      {!isMockMode && <p className="sub-header">OBSERVER_MODE // ACTIONS_DISABLED</p>}
 
       <div className="game-grid">
         <PokerTable

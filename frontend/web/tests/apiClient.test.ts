@@ -84,4 +84,51 @@ describe('createHttpApiClient', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('maps hands and actions history from backend endpoints', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/tables/table-2/hands')) {
+        return new Response(
+          JSON.stringify([
+            {
+              hand_id: 'hand-22',
+              hand_no: 22,
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith('/hands/hand-22/actions')) {
+        return new Response(
+          JSON.stringify([
+            {
+              street: 'turn',
+              acting_seat: 2,
+              action: 'call',
+              amount: 150,
+              is_fallback: false,
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      return new Response('[]', { status: 200 });
+    };
+
+    try {
+      const api = createHttpApiClient({
+        baseUrl: 'http://127.0.0.1:8080',
+        getToken: () => 'admin-token',
+      });
+      const hands = await api.getTableHands('table-2');
+      assert.equal(hands[0].handId, 'hand-22');
+
+      const actions = await api.getHandActions('hand-22');
+      assert.equal(actions[0], 'TURN S2: CALL 150');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
