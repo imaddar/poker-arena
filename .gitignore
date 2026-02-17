@@ -7,6 +7,8 @@
 node_modules/
 dist/
 build/
+web/
+web/node_modules/
 
 # Logs
 *.log
