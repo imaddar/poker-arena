@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,6 +91,14 @@ type tableStatusResponse struct {
 	ActionsPersisted int `json:"actions_persisted"`
 }
 
+type tableStateResponse struct {
+	Table        persistence.TableRecord     `json:"table"`
+	Seats        []persistence.SeatRecord    `json:"seats"`
+	LatestRun    *persistence.TableRunRecord `json:"latest_run,omitempty"`
+	HandsCount   int                         `json:"hands_count"`
+	ActionsCount int                         `json:"actions_count"`
+}
+
 type handResponse struct {
 	HandID        string            `json:"hand_id"`
 	TableID       string            `json:"table_id"`
@@ -129,6 +139,36 @@ type replayAnalytics struct {
 	ActionsBySeat   map[domain.SeatNo]int `json:"actions_by_seat,omitempty"`
 }
 
+type createUserRequest struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
+type createAgentRequest struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+}
+
+type createAgentVersionRequest struct {
+	EndpointURL string          `json:"endpoint_url"`
+	ConfigJSON  json.RawMessage `json:"config_json,omitempty"`
+}
+
+type createTableRequest struct {
+	Name       string  `json:"name"`
+	MaxSeats   *uint8  `json:"max_seats,omitempty"`
+	SmallBlind *uint32 `json:"small_blind,omitempty"`
+	BigBlind   *uint32 `json:"big_blind,omitempty"`
+}
+
+type joinTableRequest struct {
+	SeatNo         uint8             `json:"seat_no"`
+	AgentID        string            `json:"agent_id"`
+	AgentVersionID string            `json:"agent_version_id"`
+	Stack          uint32            `json:"stack"`
+	Status         domain.SeatStatus `json:"status"`
+}
+
 func NewServer(
 	repo persistence.Repository,
 	runnerFactory func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner,
@@ -148,6 +188,58 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	identity, ok := s.authenticate(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if r.URL.Path == "/users" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !identity.isAdmin() {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		s.handleCreateUser(w, r)
+		return
+	}
+
+	if r.URL.Path == "/agents" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !identity.isAdmin() {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		s.handleCreateAgent(w, r)
+		return
+	}
+
+	if agentID, ok := parseAgentVersionsRoute(r.URL.Path); ok {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !identity.isAdmin() {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		s.handleCreateAgentVersion(w, r, agentID)
+		return
+	}
+
+	if r.URL.Path == "/tables" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !identity.isAdmin() {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		s.handleCreateTable(w, r)
 		return
 	}
 
@@ -171,6 +263,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.handleStatus(w, tableID)
+		case r.Method == http.MethodGet && action == "state":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
+			s.handleTableState(w, tableID)
+		case r.Method == http.MethodPost && action == "join":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
+			s.handleJoinTable(w, r, tableID)
 		case r.Method == http.MethodGet && action == "hands":
 			s.handleHands(w, identity, tableID)
 		default:
@@ -224,7 +328,13 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 		return
 	}
 
-	input, config, buttonSeat, seats, err := validateStartRequest(tableID, req, s.config)
+	resolvedReq, statusCode, err := s.hydrateStartRequest(tableID, req)
+	if err != nil {
+		writeError(w, statusCode, err.Error())
+		return
+	}
+
+	input, config, buttonSeat, seats, err := validateStartRequest(tableID, resolvedReq, s.config)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -244,7 +354,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 			TableID:        tableID,
 			Status:         persistence.TableRunStatusRunning,
 			StartedAt:      time.Now().UTC(),
-			HandsRequested: req.HandsToRun,
+			HandsRequested: resolvedReq.HandsToRun,
 			CurrentHandNo:  input.StartingHand,
 		},
 	}
@@ -259,7 +369,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 		return
 	}
 
-	provider, err := s.providerFactory(tableID, req, s.config)
+	provider, err := s.providerFactory(tableID, resolvedReq, s.config)
 	if err != nil {
 		s.failBeforeRun(tableID, run, fmt.Errorf("resolve action provider: %w", err))
 		writeError(w, http.StatusInternalServerError, "failed to create action provider")
@@ -346,6 +456,308 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID str
 		"table_id": tableID,
 		"status":   string(persistence.TableRunStatusRunning),
 	})
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var req createUserRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.Token = strings.TrimSpace(req.Token)
+	if req.Name == "" || req.Token == "" {
+		writeError(w, http.StatusBadRequest, "name and token are required")
+		return
+	}
+	record := persistence.UserRecord{
+		ID:        newID("user"),
+		Name:      req.Name,
+		Token:     req.Token,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.repo.CreateUser(record); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create user")
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	var req createAgentRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+	req.UserID = strings.TrimSpace(req.UserID)
+	req.Name = strings.TrimSpace(req.Name)
+	if req.UserID == "" || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "user_id and name are required")
+		return
+	}
+	record := persistence.AgentRecord{
+		ID:        newID("agent"),
+		UserID:    req.UserID,
+		Name:      req.Name,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.repo.CreateAgent(record); err != nil {
+		if errors.Is(err, persistence.ErrUserNotFound) {
+			writeError(w, http.StatusBadRequest, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create agent")
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleCreateAgentVersion(w http.ResponseWriter, r *http.Request, agentID string) {
+	var req createAgentVersionRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+	req.EndpointURL = strings.TrimSpace(req.EndpointURL)
+	parsedEndpoint, err := url.Parse(req.EndpointURL)
+	if err != nil || parsedEndpoint == nil || parsedEndpoint.Host == "" {
+		writeError(w, http.StatusBadRequest, "endpoint_url is invalid")
+		return
+	}
+	if parsedEndpoint.Scheme != "http" && parsedEndpoint.Scheme != "https" {
+		writeError(w, http.StatusBadRequest, "endpoint_url must use http or https")
+		return
+	}
+	if len(s.config.AllowedAgentHosts) > 0 {
+		if _, ok := s.config.AllowedAgentHosts[parsedEndpoint.Host]; !ok {
+			writeError(w, http.StatusBadRequest, "endpoint host is not allowlisted")
+			return
+		}
+	}
+
+	configJSON := req.ConfigJSON
+	if len(configJSON) == 0 {
+		configJSON = json.RawMessage(`{}`)
+	}
+
+	var created persistence.AgentVersionRecord
+	for version := 1; version <= 10_000; version++ {
+		candidate := persistence.AgentVersionRecord{
+			ID:          newID("version"),
+			AgentID:     agentID,
+			Version:     version,
+			EndpointURL: req.EndpointURL,
+			ConfigJSON:  append([]byte(nil), configJSON...),
+			CreatedAt:   time.Now().UTC(),
+		}
+		err := s.repo.CreateAgentVersion(candidate)
+		if err == nil {
+			created = candidate
+			break
+		}
+		if errors.Is(err, persistence.ErrAgentNotFound) {
+			writeError(w, http.StatusBadRequest, "agent not found")
+			return
+		}
+		if errors.Is(err, persistence.ErrAgentVersionExists) {
+			continue
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create agent version")
+		return
+	}
+	if created.ID == "" {
+		writeError(w, http.StatusInternalServerError, "failed to allocate agent version")
+		return
+	}
+	writeJSON(w, http.StatusOK, created)
+}
+
+func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request) {
+	var req createTableRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+
+	cfg := domain.DefaultV0TableConfig()
+	if req.MaxSeats != nil {
+		cfg.MaxSeats = *req.MaxSeats
+	}
+	if req.SmallBlind != nil {
+		cfg.SmallBlind = *req.SmallBlind
+	}
+	if req.BigBlind != nil {
+		cfg.BigBlind = *req.BigBlind
+	}
+	if err := cfg.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	record := persistence.TableRecord{
+		ID:         newID("table"),
+		Name:       strings.TrimSpace(req.Name),
+		MaxSeats:   cfg.MaxSeats,
+		SmallBlind: cfg.SmallBlind,
+		BigBlind:   cfg.BigBlind,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  time.Now().UTC(),
+	}
+	if record.Name == "" {
+		record.Name = record.ID
+	}
+	if err := s.repo.CreateTable(record); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create table")
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleJoinTable(w http.ResponseWriter, r *http.Request, tableID string) {
+	var req joinTableRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+	tableRecord, ok, err := s.repo.GetTable(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load table")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "table not found")
+		return
+	}
+	seatNo, err := domain.NewSeatNo(req.SeatNo, tableRecord.MaxSeats)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Status == "" {
+		req.Status = domain.SeatStatusActive
+	}
+	if !isSeatStatusAllowed(req.Status) {
+		writeError(w, http.StatusBadRequest, "invalid seat status")
+		return
+	}
+	if req.Stack == 0 {
+		writeError(w, http.StatusBadRequest, "stack must be greater than zero")
+		return
+	}
+	record := persistence.SeatRecord{
+		ID:             newID("seat"),
+		TableID:        tableID,
+		SeatNo:         seatNo,
+		AgentID:        strings.TrimSpace(req.AgentID),
+		AgentVersionID: strings.TrimSpace(req.AgentVersionID),
+		Stack:          req.Stack,
+		Status:         req.Status,
+		CreatedAt:      time.Now().UTC(),
+	}
+	if record.AgentID == "" || record.AgentVersionID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id and agent_version_id are required")
+		return
+	}
+	if err := s.repo.UpsertSeat(record); err != nil {
+		switch {
+		case errors.Is(err, persistence.ErrTableNotFound):
+			writeError(w, http.StatusNotFound, "table not found")
+		case errors.Is(err, persistence.ErrAgentNotFound):
+			writeError(w, http.StatusBadRequest, "agent not found")
+		case errors.Is(err, persistence.ErrAgentVersionNotFound):
+			writeError(w, http.StatusBadRequest, "agent version not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to join table")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleTableState(w http.ResponseWriter, tableID string) {
+	tableRecord, ok, err := s.repo.GetTable(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load table")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "table not found")
+		return
+	}
+	seats, err := s.repo.ListSeats(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load seats")
+		return
+	}
+	run, runOK, err := s.repo.GetTableRun(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load run status")
+		return
+	}
+	hands, err := s.repo.ListHands(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load hands")
+		return
+	}
+	actionCount := 0
+	for _, hand := range hands {
+		actions, listErr := s.repo.ListActions(hand.HandID)
+		if listErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load actions")
+			return
+		}
+		actionCount += len(actions)
+	}
+	response := tableStateResponse{
+		Table:        tableRecord,
+		Seats:        seats,
+		HandsCount:   len(hands),
+		ActionsCount: actionCount,
+	}
+	if runOK {
+		runCopy := run
+		response.LatestRun = &runCopy
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) hydrateStartRequest(tableID string, req StartRequest) (StartRequest, int, error) {
+	if len(req.Seats) > 0 {
+		return req, http.StatusOK, nil
+	}
+	tableRecord, ok, err := s.repo.GetTable(tableID)
+	if err != nil {
+		return StartRequest{}, http.StatusInternalServerError, fmt.Errorf("failed to load table")
+	}
+	if !ok {
+		return StartRequest{}, http.StatusNotFound, fmt.Errorf("table not found")
+	}
+	seats, err := s.repo.ListSeats(tableID)
+	if err != nil {
+		return StartRequest{}, http.StatusInternalServerError, fmt.Errorf("failed to load seats")
+	}
+	if len(seats) == 0 {
+		return StartRequest{}, http.StatusBadRequest, fmt.Errorf("table has no seats")
+	}
+	if req.TableConfig == nil {
+		cfg := domain.DefaultV0TableConfig()
+		cfg.MaxSeats = tableRecord.MaxSeats
+		cfg.SmallBlind = tableRecord.SmallBlind
+		cfg.BigBlind = tableRecord.BigBlind
+		req.TableConfig = &cfg
+	}
+	req.Seats = make([]StartSeat, 0, len(seats))
+	for _, seat := range seats {
+		version, ok, getErr := s.repo.GetAgentVersion(seat.AgentVersionID)
+		if getErr != nil {
+			return StartRequest{}, http.StatusInternalServerError, fmt.Errorf("failed to load agent version")
+		}
+		if !ok {
+			return StartRequest{}, http.StatusBadRequest, fmt.Errorf("agent version %s not found", seat.AgentVersionID)
+		}
+		req.Seats = append(req.Seats, StartSeat{
+			SeatNo:        uint8(seat.SeatNo),
+			Stack:         seat.Stack,
+			Status:        seat.Status,
+			AgentEndpoint: version.EndpointURL,
+		})
+	}
+	return req, http.StatusOK, nil
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, tableID string) {
@@ -759,6 +1171,17 @@ func parseHandRoute(path string) (handID string, action string, ok bool) {
 	return parts[1], parts[2], true
 }
 
+func parseAgentVersionsRoute(path string) (agentID string, ok bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 3 || parts[0] != "agents" || parts[2] != "versions" {
+		return "", false
+	}
+	if parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 func parseRedactHoleCards(raw string) (bool, error) {
 	normalized := strings.TrimSpace(raw)
 	if normalized == "" {
@@ -880,4 +1303,28 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
+	body := http.MaxBytesReader(w, r.Body, maxStartRequestBodyBytes)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(dest); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	return true
+}
+
+func newID(prefix string) string {
+	random := make([]byte, 8)
+	if _, err := cryptorand.Read(random); err != nil {
+		return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+	}
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UTC().UnixNano(), hex.EncodeToString(random))
 }

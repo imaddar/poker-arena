@@ -76,6 +76,212 @@ func TestGetHands_ReturnsPersistedHandsForTable(t *testing.T) {
 	}
 }
 
+func TestCreateUser_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"operator","token":"operator-token"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected %d got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+	var user persistence.UserRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &user); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if user.Name != "operator" || user.Token != "operator-token" || user.ID == "" {
+		t.Fatalf("unexpected user response: %+v", user)
+	}
+}
+
+func TestCreateAgent_MissingUserFails(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodPost, "/agents", strings.NewReader(`{"user_id":"missing","name":"agent-a"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAgentVersion_ValidatesEndpointAndAllowlist(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateUser(persistence.UserRecord{ID: "u1", Name: "u", Token: "tok", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := repo.CreateAgent(persistence.AgentRecord{ID: "a1", UserID: "u1", Name: "a", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/agents/a1/versions", strings.NewReader(`{"endpoint_url":"http://blocked.local:9001/cb"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/agents/a1/versions", strings.NewReader(`{"endpoint_url":"http://agent.local:9001/cb"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w = httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected %d got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTableJoinAndState(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateUser(persistence.UserRecord{ID: "u1", Name: "u", Token: "tok", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := repo.CreateAgent(persistence.AgentRecord{ID: "a1", UserID: "u1", Name: "a1", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+	if err := repo.CreateAgentVersion(persistence.AgentVersionRecord{ID: "v1", AgentID: "a1", Version: 1, EndpointURL: "http://agent.local:9001/cb", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgentVersion failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodPost, "/tables", strings.NewReader(`{"name":"t1","max_seats":6,"small_blind":50,"big_blind":100}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create table failed: %d body=%s", w.Code, w.Body.String())
+	}
+	var table persistence.TableRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &table); err != nil {
+		t.Fatalf("decode table failed: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/tables/"+table.ID+"/join", strings.NewReader(`{"seat_no":1,"agent_id":"a1","agent_version_id":"v1","stack":10000,"status":"active"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w = httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("join failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/tables/"+table.ID+"/state", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w = httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("state failed: %d body=%s", w.Code, w.Body.String())
+	}
+	var state tableStateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatalf("decode state failed: %v", err)
+	}
+	if state.Table.ID != table.ID || len(state.Seats) != 1 || state.Seats[0].SeatNo != 1 {
+		t.Fatalf("unexpected state payload: %+v", state)
+	}
+}
+
+func TestStart_WithPersistedSeatsOnly_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateUser(persistence.UserRecord{ID: "u1", Name: "u", Token: "tok", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if err := repo.CreateAgent(persistence.AgentRecord{ID: "a1", UserID: "u1", Name: "a1", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+	if err := repo.CreateAgent(persistence.AgentRecord{ID: "a2", UserID: "u1", Name: "a2", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+	if err := repo.CreateAgentVersion(persistence.AgentVersionRecord{ID: "v1", AgentID: "a1", Version: 1, EndpointURL: "http://agent.local:9001/cb", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgentVersion failed: %v", err)
+	}
+	if err := repo.CreateAgentVersion(persistence.AgentVersionRecord{ID: "v2", AgentID: "a2", Version: 1, EndpointURL: "http://agent.local:9002/cb", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgentVersion failed: %v", err)
+	}
+	if err := repo.CreateTable(persistence.TableRecord{ID: "table-1", Name: "t", MaxSeats: 6, SmallBlind: 50, BigBlind: 100, Status: "idle", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+	if err := repo.UpsertSeat(persistence.SeatRecord{ID: "s1", TableID: "table-1", SeatNo: 1, AgentID: "a1", AgentVersionID: "v1", Stack: 10000, Status: domain.SeatStatusActive, CreatedAt: now}); err != nil {
+		t.Fatalf("UpsertSeat s1 failed: %v", err)
+	}
+	if err := repo.UpsertSeat(persistence.SeatRecord{ID: "s2", TableID: "table-1", SeatNo: 2, AgentID: "a2", AgentVersionID: "v2", Stack: 10000, Status: domain.SeatStatusActive, CreatedAt: now}); err != nil {
+		t.Fatalf("UpsertSeat s2 failed: %v", err)
+	}
+
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, start StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			if len(start.Seats) != 2 {
+				return nil, fmt.Errorf("expected 2 hydrated seats, got %d", len(start.Seats))
+			}
+			return fakeProvider{}, nil
+		},
+		ServerConfig{
+			AdminBearerTokens: map[string]struct{}{"admin": {}},
+			AllowedAgentHosts: map[string]struct{}{"agent.local:9001": {}, "agent.local:9002": {}},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-1/start", strings.NewReader(`{"hands_to_run":1}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected %d got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestStart_WithPersistedTableMissingReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(
+		repo,
+		func(_ tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner { return fakeRunner{cfg: cfg} },
+		func(_ string, _ StartRequest, _ ServerConfig) (tablerunner.ActionProvider, error) {
+			return fakeProvider{}, nil
+		},
+		ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}},
+	)
+	req := httptest.NewRequest(http.MethodPost, "/tables/missing/start", strings.NewReader(`{"hands_to_run":1}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected %d got %d body=%s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestResourceRoutes_RequireAdminAuth(t *testing.T) {
+	t.Parallel()
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"n","token":"t"}`))
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected %d got %d body=%s", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+}
+
 func TestGetHands_UnknownTableReturnsNotFound(t *testing.T) {
 	t.Parallel()
 

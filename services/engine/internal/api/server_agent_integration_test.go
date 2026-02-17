@@ -87,6 +87,77 @@ func TestAgentRun_CompletesAndPersistsHistory(t *testing.T) {
 	}
 }
 
+func TestAgentRun_CanStartFromPersistedTableResources(t *testing.T) {
+	t.Parallel()
+
+	agentA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentA.Close()
+	agentB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentB.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	adminToken := "admin-token"
+	server := newIntegrationServer(t, repo, adminToken, []string{mustHost(t, agentA.URL), mustHost(t, agentB.URL)}, 250*time.Millisecond)
+
+	user := postJSON(t, server, adminToken, http.MethodPost, "/users", map[string]any{
+		"name":  "u1",
+		"token": "user-token",
+	}, http.StatusOK)
+	userID := user["ID"].(string)
+	agent1 := postJSON(t, server, adminToken, http.MethodPost, "/agents", map[string]any{
+		"user_id": userID,
+		"name":    "agent-1",
+	}, http.StatusOK)
+	agent1ID := agent1["ID"].(string)
+	agent2 := postJSON(t, server, adminToken, http.MethodPost, "/agents", map[string]any{
+		"user_id": userID,
+		"name":    "agent-2",
+	}, http.StatusOK)
+	agent2ID := agent2["ID"].(string)
+
+	version1 := postJSON(t, server, adminToken, http.MethodPost, "/agents/"+agent1ID+"/versions", map[string]any{
+		"endpoint_url": agentA.URL + "/callback",
+	}, http.StatusOK)
+	version2 := postJSON(t, server, adminToken, http.MethodPost, "/agents/"+agent2ID+"/versions", map[string]any{
+		"endpoint_url": agentB.URL + "/callback",
+	}, http.StatusOK)
+	table := postJSON(t, server, adminToken, http.MethodPost, "/tables", map[string]any{
+		"name":        "table-resource",
+		"max_seats":   6,
+		"small_blind": 50,
+		"big_blind":   100,
+	}, http.StatusOK)
+	tableID := table["ID"].(string)
+
+	_ = postJSON(t, server, adminToken, http.MethodPost, "/tables/"+tableID+"/join", map[string]any{
+		"seat_no":          1,
+		"agent_id":         agent1ID,
+		"agent_version_id": version1["ID"].(string),
+		"stack":            10000,
+		"status":           "active",
+	}, http.StatusOK)
+	_ = postJSON(t, server, adminToken, http.MethodPost, "/tables/"+tableID+"/join", map[string]any{
+		"seat_no":          2,
+		"agent_id":         agent2ID,
+		"agent_version_id": version2["ID"].(string),
+		"stack":            10000,
+		"status":           "active",
+	}, http.StatusOK)
+
+	startTable(t, server, adminToken, tableID, StartRequest{HandsToRun: 2}, http.StatusOK)
+	status := waitForTerminalStatus(t, server, adminToken, tableID, 3*time.Second)
+	if status.Status != persistence.TableRunStatusCompleted {
+		t.Fatalf("expected completed status, got %q err=%q", status.Status, status.Error)
+	}
+	if status.HandsCompleted != 2 {
+		t.Fatalf("expected 2 hands completed, got %d", status.HandsCompleted)
+	}
+}
+
 func TestAgentRun_TimeoutTriggersFallbackAndPersistsIt(t *testing.T) {
 	t.Parallel()
 
@@ -480,6 +551,35 @@ func mustHost(t *testing.T, rawURL string) string {
 		t.Fatalf("url parse failed: %v", err)
 	}
 	return parsed.Host
+}
+
+func postJSON(
+	t *testing.T,
+	server *Server,
+	token string,
+	method string,
+	path string,
+	payload map[string]any,
+	wantStatus int,
+) map[string]any {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload failed: %v", err)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != wantStatus {
+		t.Fatalf("request %s %s failed: want=%d got=%d body=%s", method, path, wantStatus, w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	return out
 }
 
 func writeAgentAction(t *testing.T, w http.ResponseWriter, r *http.Request, forceFold bool) {
