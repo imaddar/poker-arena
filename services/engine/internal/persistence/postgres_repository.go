@@ -450,6 +450,46 @@ WHERE id = $1
 	return rec, true, nil
 }
 
+func (r *postgresRepository) ListTables() ([]TableRecord, error) {
+	const q = `
+SELECT id, name, max_seats, small_blind, big_blind, status, created_at
+FROM tables
+ORDER BY id ASC
+`
+	rows, err := r.db.QueryContext(context.Background(), q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TableRecord, 0, 16)
+	for rows.Next() {
+		var rec TableRecord
+		var maxSeats int16
+		var smallBlind int32
+		var bigBlind int32
+		if err := rows.Scan(
+			&rec.ID,
+			&rec.Name,
+			&maxSeats,
+			&smallBlind,
+			&bigBlind,
+			&rec.Status,
+			&rec.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		rec.MaxSeats = uint8(maxSeats)
+		rec.SmallBlind = uint32(smallBlind)
+		rec.BigBlind = uint32(bigBlind)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *postgresRepository) ListSeats(tableID string) ([]SeatRecord, error) {
 	const q = `
 SELECT id, table_id, seat_no, agent_id, agent_version_id, stack, status, created_at

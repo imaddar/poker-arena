@@ -124,6 +124,7 @@ type Repository interface {
 	CreateTable(record TableRecord) error
 	UpsertSeat(record SeatRecord) error
 	GetTable(tableID string) (TableRecord, bool, error)
+	ListTables() ([]TableRecord, error)
 	ListSeats(tableID string) ([]SeatRecord, error)
 	GetAgentVersion(versionID string) (AgentVersionRecord, bool, error)
 }
@@ -313,6 +314,20 @@ func (r *inMemoryRepository) GetTable(tableID string) (TableRecord, bool, error)
 		return TableRecord{}, false, nil
 	}
 	return cloneTableRecord(record), true, nil
+}
+
+func (r *inMemoryRepository) ListTables() ([]TableRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]TableRecord, 0, len(r.tables))
+	for _, record := range r.tables {
+		out = append(out, cloneTableRecord(record))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 func (r *inMemoryRepository) ListSeats(tableID string) ([]SeatRecord, error) {

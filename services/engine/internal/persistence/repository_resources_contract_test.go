@@ -131,6 +131,44 @@ func runRepositoryResourcesContractTests(t *testing.T, mkRepo func(t *testing.T)
 		}
 	})
 
+	t.Run("Contract_ListTablesReturnsSortedByID", func(t *testing.T) {
+		repo := mkRepo(t)
+		now := time.Now().UTC()
+		if err := repo.CreateTable(TableRecord{
+			ID:         "table-2",
+			Name:       "beta",
+			MaxSeats:   6,
+			SmallBlind: 100,
+			BigBlind:   200,
+			Status:     "idle",
+			CreatedAt:  now.Add(time.Minute),
+		}); err != nil {
+			t.Fatalf("CreateTable table-2 failed: %v", err)
+		}
+		if err := repo.CreateTable(TableRecord{
+			ID:         "table-1",
+			Name:       "alpha",
+			MaxSeats:   6,
+			SmallBlind: 50,
+			BigBlind:   100,
+			Status:     "idle",
+			CreatedAt:  now,
+		}); err != nil {
+			t.Fatalf("CreateTable table-1 failed: %v", err)
+		}
+
+		tables, err := repo.ListTables()
+		if err != nil {
+			t.Fatalf("ListTables failed: %v", err)
+		}
+		if len(tables) != 2 {
+			t.Fatalf("expected 2 tables, got %d", len(tables))
+		}
+		if tables[0].ID != "table-1" || tables[1].ID != "table-2" {
+			t.Fatalf("expected ordered IDs [table-1, table-2], got [%s, %s]", tables[0].ID, tables[1].ID)
+		}
+	})
+
 	t.Run("Contract_SeatRequiresExistingForeignKeys", func(t *testing.T) {
 		repo := mkRepo(t)
 		if err := repo.UpsertSeat(SeatRecord{

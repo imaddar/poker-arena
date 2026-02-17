@@ -18,6 +18,8 @@ This version is intentionally minimal and optimized for speed of implementation.
 - HTTP JSON API for user and table operations.
 - HTTP JSON callback protocol from engine to agent endpoint.
 - Persistent storage for agents, tables, hands, and actions.
+- Product mode: admin-first control plane.
+- Product mode: signed-in human observer can watch their own agent's play history and table state.
 
 ### Out of scope (for now)
 - Tournaments.
@@ -25,6 +27,7 @@ This version is intentionally minimal and optimized for speed of implementation.
 - Sandbox isolation for untrusted agent code.
 - Anti-collusion and fraud systems.
 - Leaderboards and ratings.
+- Live human turn action submission to the engine.
 
 ## 3. Fixed Rules for v0
 - Seats: max 6 players.
@@ -73,6 +76,9 @@ On timeout, network error, malformed payload, or illegal action:
 - `GET /tables/:id/state`
 - `POST /tables/:id/start` (starts loop for this table)
 - `POST /tables/:id/stop` (stops loop for this table)
+- `GET /tables/:id/hands` (observer-visible hand history)
+- `GET /hands/:id/actions` (observer-visible action history)
+- `GET /hands/:id/replay` (observer-visible replay with visibility controls)
 
 ## 6. Data Model (initial)
 - `users(id, name, token, created_at)`

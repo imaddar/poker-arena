@@ -231,15 +231,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/tables" {
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
 		if !identity.isAdmin() {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-		s.handleCreateTable(w, r)
+		switch r.Method {
+		case http.MethodPost:
+			s.handleCreateTable(w, r)
+		case http.MethodGet:
+			s.handleListTables(w)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 
@@ -607,6 +610,15 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleListTables(w http.ResponseWriter) {
+	tables, err := s.repo.ListTables()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list tables")
+		return
+	}
+	writeJSON(w, http.StatusOK, tables)
 }
 
 func (s *Server) handleJoinTable(w http.ResponseWriter, r *http.Request, tableID string) {

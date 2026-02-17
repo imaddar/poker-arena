@@ -76,6 +76,90 @@ func TestGetHands_ReturnsPersistedHandsForTable(t *testing.T) {
 	}
 }
 
+func TestListTables_AdminCanListTables(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-2",
+		Name:       "Beta",
+		MaxSeats:   6,
+		SmallBlind: 100,
+		BigBlind:   200,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateTable table-2 failed: %v", err)
+	}
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-1",
+		Name:       "Alpha",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now.Add(1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateTable table-1 failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodGet, "/tables", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var tables []persistence.TableRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &tables); err != nil {
+		t.Fatalf("failed to decode tables response: %v", err)
+	}
+	if len(tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(tables))
+	}
+	if tables[0].ID != "table-1" || tables[1].ID != "table-2" {
+		t.Fatalf("expected sorted table IDs [table-1 table-2], got [%s %s]", tables[0].ID, tables[1].ID)
+	}
+}
+
+func TestListTables_UnauthenticatedReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+
+	req := httptest.NewRequest(http.MethodGet, "/tables", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+}
+
+func TestListTables_SeatTokenReturnsForbidden(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/tables", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, w.Code, w.Body.String())
+	}
+}
+
 func TestCreateUser_Succeeds(t *testing.T) {
 	t.Parallel()
 
