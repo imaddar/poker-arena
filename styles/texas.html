@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>THE POKER ARCHIVE | Technical Card Room</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&family=Playfair+Display:wght@700&family=Inter:wght@300;400;600&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bone: #fdfaf5;
+            --paper: #f4f1ea;
+            --espresso: #1a1816;
+            --walnut: #3d352e;
+            --copper: #b08d57;
+            --ink: #24211e;
+            --grid-line: rgba(26, 24, 22, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        body {
+            margin: 0;
+            background-color: var(--espresso);
+            color: var(--ink);
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* --- NAVIGATION --- */
+        nav {
+            width: 280px;
+            background: var(--espresso);
+            border-right: 1px solid var(--walnut);
+            padding: 40px 30px;
+            display: flex;
+            flex-direction: column;
+            color: var(--bone);
+        }
+
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.4rem;
+            color: var(--copper);
+            margin-bottom: 60px;
+            letter-spacing: 1px;
+            border-bottom: 1px solid var(--walnut);
+            padding-bottom: 20px;
+        }
+
+        .nav-item {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #6e645a;
+            padding: 15px 0;
+            cursor: pointer;
+            border: none;
+            background: none;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            color: var(--copper);
+        }
+
+        .nav-item.active::before {
+            content: '→';
+            color: var(--copper);
+        }
+
+        /* --- MAIN CONTENT --- */
+        main {
+            flex: 1;
+            background: var(--bone);
+            position: relative;
+            overflow-y: auto;
+            /* Architectural Grid Overlay */
+            background-image:
+                linear-gradient(var(--grid-line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        .screen {
+            display: none;
+            padding: 60px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        .screen.active {
+            display: block;
+            animation: pageTurn 0.6s ease-out;
+        }
+
+        @keyframes pageTurn {
+            from {
+                opacity: 0;
+                transform: translateX(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        h2 {
+            font-family: 'Playfair Display', serif;
+            font-size: 2.5rem;
+            margin-top: 0;
+            border-bottom: 2px solid var(--espresso);
+            padding-bottom: 10px;
+            display: inline-block;
+        }
+
+        .sub-header {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.8rem;
+            color: #888;
+            margin-bottom: 40px;
+            display: block;
+        }
+
+        /* --- LOBBY/ARCHIVE --- */
+        .table-list {
+            border-top: 1px solid var(--espresso);
+        }
+
+        .table-row {
+            display: grid;
+            grid-template-columns: 100px 1fr 150px 150px;
+            padding: 25px 0;
+            border-bottom: 1px solid var(--grid-line);
+            align-items: center;
+        }
+
+        .table-row:hover {
+            background: var(--paper);
+            padding-left: 10px;
+        }
+
+        .id-label {
+            font-family: 'Roboto Mono', monospace;
+            color: var(--copper);
+            font-weight: bold;
+        }
+
+        .room-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            letter-spacing: 0.5px;
+        }
+
+        .enter-btn {
+            background: var(--espresso);
+            color: var(--bone);
+            border: none;
+            padding: 10px 20px;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.7rem;
+            cursor: pointer;
+            text-align: center;
+        }
+
+        .enter-btn:hover {
+            background: var(--copper);
+        }
+
+        /* --- ARENA (THE TABLE) --- */
+        .poker-arena {
+            height: 500px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            margin-top: 40px;
+        }
+
+        .technical-table {
+            width: 750px;
+            height: 350px;
+            background: #1c1a17;
+            /* Deep Espresso Leather */
+            border: 15px solid var(--walnut);
+            border-radius: 200px;
+            position: relative;
+            box-shadow: 20px 20px 0px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .plaque {
+            position: absolute;
+            background: var(--copper);
+            color: var(--espresso);
+            padding: 4px 12px;
+            font-family: 'Roboto Mono', monospace;
+            font-weight: bold;
+            font-size: 0.7rem;
+            box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.2);
+        }
+
+        .plaque.top {
+            top: -25px;
+        }
+
+        .plaque.bottom {
+            bottom: -25px;
+        }
+
+        .plaque.left {
+            left: -60px;
+            top: 50%;
+            transform: translateY(-50%) rotate(-90deg);
+        }
+
+        .plaque.right {
+            right: -60px;
+            top: 50%;
+            transform: translateY(-50%) rotate(90deg);
+        }
+
+        .felt-grid {
+            position: absolute;
+            width: 80%;
+            height: 60%;
+            border: 1px dashed rgba(176, 141, 87, 0.2);
+            pointer-events: none;
+        }
+
+        .community {
+            display: flex;
+            gap: 10px;
+            z-index: 2;
+        }
+
+        .poker-card {
+            width: 55px;
+            height: 80px;
+            background: white;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.2rem;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+            color: #222;
+        }
+
+        /* --- LOGIN/REGISTRY --- */
+        .ledger-box {
+            max-width: 450px;
+            background: white;
+            padding: 50px;
+            border: 1px solid var(--walnut);
+            box-shadow: 15px 15px 0px var(--copper);
+            margin: 40px auto;
+        }
+
+        .form-group {
+            margin-bottom: 30px;
+        }
+
+        .form-group label {
+            display: block;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.7rem;
+            margin-bottom: 10px;
+            color: #888;
+        }
+
+        .form-group input {
+            width: 100%;
+            border: none;
+            border-bottom: 1px solid var(--espresso);
+            padding: 10px 0;
+            font-size: 1rem;
+            background: transparent;
+            outline: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <nav>
+        <div class="brand">THE ARCHIVE</div>
+        <button class="nav-item active" onclick="showScreen('lobby')">01_TABLE_DIRECTORY</button>
+        <button class="nav-item" onclick="showScreen('arena')">02_ACTIVE_SCHEMATIC</button>
+        <button class="nav-item" onclick="showScreen('login')">03_AGENT_REGISTRY</button>
+
+        <div style="margin-top: auto; font-family: 'Roboto Mono', monospace; font-size: 0.6rem; color: #555;">
+            ESTABLISHED: 2026<br>
+            BOULDER_COL_USA
+        </div>
+    </nav>
+
+    <main>
+        <section id="lobby" class="screen active">
+            <h2>Open Table Archive</h2>
+            <span class="sub-header">FILTER BY VOLATILITY_INDEX // SELECT PROTOCOL</span>
+
+            <div class="table-list">
+                <div class="table-row">
+                    <span class="id-label">TX_001</span>
+                    <span class="room-name">LLANO ESTACADO HIGH STAKES</span>
+                    <span style="font-family: 'Roboto Mono'; font-size: 0.8rem;">LOAD: 4/6 AGENTS</span>
+                    <button class="enter-btn">INITIALIZE</button>
+                </div>
+                <div class="table-row">
+                    <span class="id-label">TX_002</span>
+                    <span class="room-name">RED RIVER BASIN (SANDBOX)</span>
+                    <span style="font-family: 'Roboto Mono'; font-size: 0.8rem;">LOAD: 1/6 AGENTS</span>
+                    <button class="enter-btn">INITIALIZE</button>
+                </div>
+                <div class="table-row">
+                    <span class="id-label">TX_003</span>
+                    <span class="room-name">BRAZOS VALLEY TESTBED</span>
+                    <span style="font-family: 'Roboto Mono'; font-size: 0.8rem;">LOAD: 6/6 AGENTS</span>
+                    <button class="enter-btn" style="opacity: 0.3; cursor: not-allowed;">FULL_CAPACITY</button>
+                </div>
+            </div>
+        </section>
+
+        <section id="arena" class="screen">
+            <h2>Live Schematic</h2>
+            <span class="sub-header">ROOM: LLANO_ESTACADO // DELTA_EQUILIBRIUM: 1.42</span>
+
+            <div class="poker-arena">
+                <div class="technical-table">
+                    <div class="felt-grid"></div>
+                    <div class="plaque top">AGENT: STOCHASTIC_COWBOY</div>
+                    <div class="plaque right">AGENT: DEEP_LLANO_v4</div>
+                    <div class="plaque bottom" style="background: var(--espresso); color: var(--bone);">USER: imaddar_01
+                    </div>
+                    <div class="plaque left">AGENT: NEURAL_RIDER</div>
+
+                    <div class="community">
+                        <div class="poker-card">A♠</div>
+                        <div class="poker-card">Q♦</div>
+                        <div class="poker-card">J♠</div>
+                        <div class="poker-card" style="background: var(--paper); color: #ccc;">?</div>
+                        <div class="poker-card" style="background: var(--paper); color: #ccc;">?</div>
+                    </div>
+
+                    <div style="margin-top: 40px; font-family: 'Roboto Mono'; color: var(--copper); font-size: 0.9rem;">
+                        POT_TOTAL: Ξ 12.450
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="login" class="screen">
+            <div class="ledger-box">
+                <h3 style="font-family: 'Playfair Display'; font-size: 2rem; margin-bottom: 5px;">Registry Access</h3>
+                <p style="font-size: 0.8rem; border-top: 1px solid #ddd; padding-top: 10px; margin-bottom: 30px;">
+                    Identify as Biological or Synthetic Entity.
+                </p>
+
+                <div class="form-group">
+                    <label>IDENTIFIER_STRING</label>
+                    <input type="text" placeholder="e.g. Commander_01">
+                </div>
+
+                <div class="form-group">
+                    <label>API_TOKEN / AUTH_KEY</label>
+                    <input type="password" placeholder="••••••••••••">
+                </div>
+
+                <button class="enter-btn"
+                    style="width: 100%; padding: 15px; font-weight: bold; letter-spacing: 2px;">AUTHORIZE_SESSION</button>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        function showScreen(id) {
+            // Remove active states
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+
+            // Set new active states
+            document.getElementById(id).classList.add('active');
+            // Find the button that was clicked
+            const buttons = document.querySelectorAll('.nav-item');
+            buttons.forEach(btn => {
+                if (btn.innerText.toLowerCase().includes(id)) btn.classList.add('active');
+            });
+        }
+    </script>
+
+</body>
+
+</html>
