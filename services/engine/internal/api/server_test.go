@@ -114,15 +114,20 @@ func TestListTables_AdminCanListTables(t *testing.T) {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
 	}
 
-	var tables []persistence.TableRecord
+	var tables []map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &tables); err != nil {
 		t.Fatalf("failed to decode tables response: %v", err)
 	}
 	if len(tables) != 2 {
 		t.Fatalf("expected 2 tables, got %d", len(tables))
 	}
-	if tables[0].ID != "table-1" || tables[1].ID != "table-2" {
-		t.Fatalf("expected sorted table IDs [table-1 table-2], got [%s %s]", tables[0].ID, tables[1].ID)
+	if tables[0]["id"] != "table-1" || tables[1]["id"] != "table-2" {
+		t.Fatalf("expected sorted table IDs [table-1 table-2], got [%v %v]", tables[0]["id"], tables[1]["id"])
+	}
+	for _, key := range []string{"id", "name", "max_seats", "small_blind", "big_blind", "status", "created_at"} {
+		if _, ok := tables[0][key]; !ok {
+			t.Fatalf("expected key %q in table response, got %v", key, tables[0])
+		}
 	}
 }
 
@@ -300,12 +305,21 @@ func TestCreateTableJoinAndState(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("create table failed: %d body=%s", w.Code, w.Body.String())
 	}
-	var table persistence.TableRecord
+	var table map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &table); err != nil {
 		t.Fatalf("decode table failed: %v", err)
 	}
+	for _, key := range []string{"id", "name", "max_seats", "small_blind", "big_blind", "status", "created_at"} {
+		if _, ok := table[key]; !ok {
+			t.Fatalf("expected key %q in create table response, got %v", key, table)
+		}
+	}
+	tableID, ok := table["id"].(string)
+	if !ok || tableID == "" {
+		t.Fatalf("expected string id in create table response, got %v", table["id"])
+	}
 
-	req = httptest.NewRequest(http.MethodPost, "/tables/"+table.ID+"/join", strings.NewReader(`{"seat_no":1,"agent_id":"a1","agent_version_id":"v1","stack":10000,"status":"active"}`))
+	req = httptest.NewRequest(http.MethodPost, "/tables/"+tableID+"/join", strings.NewReader(`{"seat_no":1,"agent_id":"a1","agent_version_id":"v1","stack":10000,"status":"active"}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	w = httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -313,19 +327,41 @@ func TestCreateTableJoinAndState(t *testing.T) {
 		t.Fatalf("join failed: %d body=%s", w.Code, w.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/tables/"+table.ID+"/state", nil)
+	req = httptest.NewRequest(http.MethodGet, "/tables/"+tableID+"/state", nil)
 	req.Header.Set("Authorization", "Bearer admin")
 	w = httptest.NewRecorder()
 	server.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("state failed: %d body=%s", w.Code, w.Body.String())
 	}
-	var state tableStateResponse
+	var state map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
 		t.Fatalf("decode state failed: %v", err)
 	}
-	if state.Table.ID != table.ID || len(state.Seats) != 1 || state.Seats[0].SeatNo != 1 {
-		t.Fatalf("unexpected state payload: %+v", state)
+	rawTable, ok := state["table"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object field table, got %T", state["table"])
+	}
+	if rawTable["id"] != tableID {
+		t.Fatalf("expected table.id=%q, got %v", tableID, rawTable["id"])
+	}
+	for _, key := range []string{"id", "name", "max_seats", "small_blind", "big_blind", "status", "created_at"} {
+		if _, ok := rawTable[key]; !ok {
+			t.Fatalf("expected key %q in state.table response, got %v", key, rawTable)
+		}
+	}
+	rawSeats, ok := state["seats"].([]any)
+	if !ok || len(rawSeats) != 1 {
+		t.Fatalf("expected one seat in state response, got %v", state["seats"])
+	}
+	seat, ok := rawSeats[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected seat object, got %T", rawSeats[0])
+	}
+	for _, key := range []string{"id", "table_id", "seat_no", "agent_id", "agent_version_id", "stack", "status", "created_at"} {
+		if _, ok := seat[key]; !ok {
+			t.Fatalf("expected key %q in state seat response, got %v", key, seat)
+		}
 	}
 }
 

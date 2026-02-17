@@ -131,7 +131,7 @@ func TestAgentRun_CanStartFromPersistedTableResources(t *testing.T) {
 		"small_blind": 50,
 		"big_blind":   100,
 	}, http.StatusOK)
-	tableID := table["ID"].(string)
+	tableID := table["id"].(string)
 
 	_ = postJSON(t, server, adminToken, http.MethodPost, "/tables/"+tableID+"/join", map[string]any{
 		"seat_no":          1,

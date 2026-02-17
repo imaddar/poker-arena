@@ -87,17 +87,60 @@ type StartSeat struct {
 }
 
 type tableStatusResponse struct {
-	persistence.TableRunRecord
-	HandsPersisted   int `json:"hands_persisted"`
-	ActionsPersisted int `json:"actions_persisted"`
+	TableID        string                      `json:"table_id"`
+	Status         persistence.TableRunStatus  `json:"status"`
+	StartedAt      time.Time                   `json:"started_at"`
+	EndedAt        *time.Time                  `json:"ended_at,omitempty"`
+	Error          string                      `json:"error,omitempty"`
+	HandsRequested int                         `json:"hands_requested"`
+	HandsCompleted int                         `json:"hands_completed"`
+	TotalActions   int                         `json:"total_actions"`
+	TotalFallbacks int                         `json:"total_fallbacks"`
+	CurrentHandNo  uint64                      `json:"current_hand_no"`
+	HandsPersisted int                         `json:"hands_persisted"`
+	ActionsPersisted int                       `json:"actions_persisted"`
+}
+
+type tableResponse struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	MaxSeats   uint8     `json:"max_seats"`
+	SmallBlind uint32    `json:"small_blind"`
+	BigBlind   uint32    `json:"big_blind"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type seatResponse struct {
+	ID             string            `json:"id"`
+	TableID        string            `json:"table_id"`
+	SeatNo         domain.SeatNo     `json:"seat_no"`
+	AgentID        string            `json:"agent_id"`
+	AgentVersionID string            `json:"agent_version_id"`
+	Stack          uint32            `json:"stack"`
+	Status         domain.SeatStatus `json:"status"`
+	CreatedAt      time.Time         `json:"created_at"`
+}
+
+type tableRunResponse struct {
+	TableID        string                     `json:"table_id"`
+	Status         persistence.TableRunStatus `json:"status"`
+	StartedAt      time.Time                  `json:"started_at"`
+	EndedAt        *time.Time                 `json:"ended_at,omitempty"`
+	Error          string                     `json:"error,omitempty"`
+	HandsRequested int                        `json:"hands_requested"`
+	HandsCompleted int                        `json:"hands_completed"`
+	TotalActions   int                        `json:"total_actions"`
+	TotalFallbacks int                        `json:"total_fallbacks"`
+	CurrentHandNo  uint64                     `json:"current_hand_no"`
 }
 
 type tableStateResponse struct {
-	Table        persistence.TableRecord     `json:"table"`
-	Seats        []persistence.SeatRecord    `json:"seats"`
-	LatestRun    *persistence.TableRunRecord `json:"latest_run,omitempty"`
-	HandsCount   int                         `json:"hands_count"`
-	ActionsCount int                         `json:"actions_count"`
+	Table        tableResponse     `json:"table"`
+	Seats        []seatResponse    `json:"seats"`
+	LatestRun    *tableRunResponse `json:"latest_run,omitempty"`
+	HandsCount   int               `json:"hands_count"`
+	ActionsCount int               `json:"actions_count"`
 }
 
 type handResponse struct {
@@ -614,7 +657,7 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create table")
 		return
 	}
-	writeJSON(w, http.StatusOK, record)
+	writeJSON(w, http.StatusOK, mapTableRecordToResponse(record))
 }
 
 func (s *Server) handleListTables(w http.ResponseWriter) {
@@ -623,7 +666,11 @@ func (s *Server) handleListTables(w http.ResponseWriter) {
 		writeError(w, http.StatusInternalServerError, "failed to list tables")
 		return
 	}
-	writeJSON(w, http.StatusOK, tables)
+	response := make([]tableResponse, 0, len(tables))
+	for _, table := range tables {
+		response = append(response, mapTableRecordToResponse(table))
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleJoinTable(w http.ResponseWriter, r *http.Request, tableID string) {
@@ -683,7 +730,7 @@ func (s *Server) handleJoinTable(w http.ResponseWriter, r *http.Request, tableID
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, record)
+	writeJSON(w, http.StatusOK, mapSeatRecordToResponse(record))
 }
 
 func (s *Server) handleTableState(w http.ResponseWriter, tableID string) {
@@ -720,14 +767,18 @@ func (s *Server) handleTableState(w http.ResponseWriter, tableID string) {
 		}
 		actionCount += len(actions)
 	}
+	seatItems := make([]seatResponse, 0, len(seats))
+	for _, seat := range seats {
+		seatItems = append(seatItems, mapSeatRecordToResponse(seat))
+	}
 	response := tableStateResponse{
-		Table:        tableRecord,
-		Seats:        seats,
+		Table:        mapTableRecordToResponse(tableRecord),
+		Seats:        seatItems,
 		HandsCount:   len(hands),
 		ActionsCount: actionCount,
 	}
 	if runOK {
-		runCopy := run
+		runCopy := mapTableRunRecordToResponse(run)
 		response.LatestRun = &runCopy
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -837,7 +888,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, tableID string) {
 	}
 
 	writeJSON(w, http.StatusOK, tableStatusResponse{
-		TableRunRecord:   record,
+		TableID:          record.TableID,
+		Status:           record.Status,
+		StartedAt:        record.StartedAt,
+		EndedAt:          record.EndedAt,
+		Error:            record.Error,
+		HandsRequested:   record.HandsRequested,
+		HandsCompleted:   record.HandsCompleted,
+		TotalActions:     record.TotalActions,
+		TotalFallbacks:   record.TotalFallbacks,
+		CurrentHandNo:    record.CurrentHandNo,
 		HandsPersisted:   len(hands),
 		ActionsPersisted: actionCount,
 	})
@@ -1326,6 +1386,46 @@ func isShowdownHand(hand persistence.HandRecord) bool {
 		}
 	}
 	return false
+}
+
+func mapTableRecordToResponse(record persistence.TableRecord) tableResponse {
+	return tableResponse{
+		ID:         record.ID,
+		Name:       record.Name,
+		MaxSeats:   record.MaxSeats,
+		SmallBlind: record.SmallBlind,
+		BigBlind:   record.BigBlind,
+		Status:     record.Status,
+		CreatedAt:  record.CreatedAt,
+	}
+}
+
+func mapSeatRecordToResponse(record persistence.SeatRecord) seatResponse {
+	return seatResponse{
+		ID:             record.ID,
+		TableID:        record.TableID,
+		SeatNo:         record.SeatNo,
+		AgentID:        record.AgentID,
+		AgentVersionID: record.AgentVersionID,
+		Stack:          record.Stack,
+		Status:         record.Status,
+		CreatedAt:      record.CreatedAt,
+	}
+}
+
+func mapTableRunRecordToResponse(record persistence.TableRunRecord) tableRunResponse {
+	return tableRunResponse{
+		TableID:        record.TableID,
+		Status:         record.Status,
+		StartedAt:      record.StartedAt,
+		EndedAt:        record.EndedAt,
+		Error:          record.Error,
+		HandsRequested: record.HandsRequested,
+		HandsCompleted: record.HandsCompleted,
+		TotalActions:   record.TotalActions,
+		TotalFallbacks: record.TotalFallbacks,
+		CurrentHandNo:  record.CurrentHandNo,
+	}
 }
 
 func handIncludesSeat(hand persistence.HandRecord, seat domain.SeatNo) bool {
