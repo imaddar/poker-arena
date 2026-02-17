@@ -42,3 +42,9 @@ npm --prefix frontend/web run dev
 ```bash
 ./scripts/web-smoke-local.sh
 ```
+
+## Verification Checklist
+- `/lobby` loads after sign-in and fetches tables from backend.
+- Selecting a table opens `/game/:tableId`.
+- Game page in backend mode shows observer log entries from hand history.
+- `./scripts/web-smoke-local.sh` exits successfully.

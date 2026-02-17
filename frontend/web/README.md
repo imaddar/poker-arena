@@ -21,6 +21,32 @@ VITE_ADMIN_TOKEN=local-admin-token \
 npm run dev
 ```
 
+## Backend Mode Quickstart
+
+1. Create local env config:
+```bash
+cp .env.example .env.local
+```
+2. Ensure backend is running with:
+- `CONTROLPLANE_ADMIN_TOKENS` including the token in `VITE_ADMIN_TOKEN`
+- `CONTROLPLANE_CORS_ALLOWED_ORIGINS` including `http://localhost:5173`
+3. Start frontend:
+```bash
+npm run dev
+```
+4. Run smoke checks:
+```bash
+npm run smoke:web
+```
+
+Common failures:
+- `401 unauthorized` on table fetch:
+  `VITE_ADMIN_TOKEN` does not match `CONTROLPLANE_ADMIN_TOKENS`.
+- CORS preflight failure in browser or smoke script:
+  `CONTROLPLANE_CORS_ALLOWED_ORIGINS` is missing `http://localhost:5173`.
+- Empty table list:
+  Backend has no tables yet. Create one via API or `scripts/api-local.sh create-table`.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh

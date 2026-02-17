@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test:logic": "node --test --experimental-strip-types tests/**/*.test.ts",
+    "smoke:web": "../../scripts/web-smoke-local.sh",
     "lint": "eslint .",
     "preview": "vite preview"
   },
