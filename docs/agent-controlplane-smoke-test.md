@@ -160,10 +160,22 @@ export BASE_URL="http://127.0.0.1:8080"
 export TABLE_ID="smoke-table-1"
 export ADMIN_API_TOKEN="local-admin-token"
 export SEAT_API_TOKEN="local-seat-1-token"
-export AGENT_ENDPOINTS="http://127.0.0.1:9001/callback,http://127.0.0.1:9002/callback"
 
-# start 2 hands with 2 players
-./scripts/api-local.sh start 2 2
+# create resources
+USER_ID="$(./scripts/api-local.sh create-user smoke-user smoke-user-token | jq -r '.ID')"
+AGENT1_ID="$(./scripts/api-local.sh create-agent "${USER_ID}" smoke-agent-a | jq -r '.ID')"
+AGENT2_ID="$(./scripts/api-local.sh create-agent "${USER_ID}" smoke-agent-b | jq -r '.ID')"
+VERSION1_ID="$(./scripts/api-local.sh create-version "${AGENT1_ID}" http://127.0.0.1:9001/callback | jq -r '.ID')"
+VERSION2_ID="$(./scripts/api-local.sh create-version "${AGENT2_ID}" http://127.0.0.1:9002/callback | jq -r '.ID')"
+TABLE_ID="$(./scripts/api-local.sh create-table smoke-table 6 50 100 | jq -r '.ID')"
+export TABLE_ID
+
+# seat agents
+./scripts/api-local.sh join 1 "${AGENT1_ID}" "${VERSION1_ID}" 10000 active
+./scripts/api-local.sh join 2 "${AGENT2_ID}" "${VERSION2_ID}" 10000 active
+
+# start 2 hands from persisted table seats
+./scripts/api-local.sh start 2
 
 # poll run status until it reaches completed
 ./scripts/api-local.sh status
