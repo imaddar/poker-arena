@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api/mock';
+import { api } from '../api';
 import { filterTables, type LobbyFilters, type StakeFilter, type StatusFilter } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
 import type { Table } from '../types';

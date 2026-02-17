@@ -1,13 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-
-export interface ApiClient {
-  login(username: string): Promise<User>;
-  getTables(): Promise<Table[]>;
-  joinTable(tableId: string): Promise<{ success: boolean; message?: string }>;
-  leaveTable(tableId: string): Promise<{ success: boolean }>;
-  getTableState(tableId: string): Promise<GameState>;
-  submitAction(tableId: string, action: ActionRequest): Promise<GameState>;
-}
+import type { ApiClient } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -287,4 +279,6 @@ class MockApi implements ApiClient {
   }
 }
 
-export const api: ApiClient = new MockApi();
+export function createMockApi(): ApiClient {
+  return new MockApi();
+}

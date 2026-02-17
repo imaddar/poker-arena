@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api } from '../api/mock';
+import { api } from '../api';
 import { PokerTable } from '../components/PokerTable';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';

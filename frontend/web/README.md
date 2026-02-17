@@ -2,6 +2,24 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+## API Mode
+
+The app can run against the mock API or the engine control-plane API.
+
+- `VITE_USE_MOCK_API=true` uses the in-memory mock API.
+- `VITE_USE_MOCK_API=false` uses HTTP client mode.
+- `VITE_API_BASE_URL` sets the backend base URL in HTTP client mode.
+- `VITE_ADMIN_TOKEN` sets the bearer token used by HTTP client mode.
+
+Example:
+
+```bash
+VITE_USE_MOCK_API=false \
+VITE_API_BASE_URL=http://127.0.0.1:8080 \
+VITE_ADMIN_TOKEN=local-admin-token \
+npm run dev
+```
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
