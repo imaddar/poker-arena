@@ -19,6 +19,7 @@ archive/
 # Env
 .env
 .env.*
+!frontend/web/.env.example
 
 # macOS
 .DS_Store
