@@ -89,3 +89,27 @@ func TestHasTokenOverlap(t *testing.T) {
 		t.Fatal("expected overlap")
 	}
 }
+
+func TestParseCORSAllowedOrigins(t *testing.T) {
+	t.Parallel()
+
+	origins := parseCORSAllowedOrigins("http://localhost:5173, https://arena.example.com")
+	if len(origins) != 2 {
+		t.Fatalf("expected 2 origins, got %d", len(origins))
+	}
+	if _, ok := origins["http://localhost:5173"]; !ok {
+		t.Fatal("expected localhost origin in parsed set")
+	}
+	if _, ok := origins["https://arena.example.com"]; !ok {
+		t.Fatal("expected production origin in parsed set")
+	}
+}
+
+func TestParseCORSAllowedOrigins_EmptyInput(t *testing.T) {
+	t.Parallel()
+
+	origins := parseCORSAllowedOrigins("  ,   ")
+	if len(origins) != 0 {
+		t.Fatalf("expected empty origin set, got %d", len(origins))
+	}
+}

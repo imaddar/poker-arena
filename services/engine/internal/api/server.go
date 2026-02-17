@@ -36,6 +36,7 @@ type ServerConfig struct {
 	AdminBearerTokens     map[string]struct{}
 	SeatBearerTokens      map[string]domain.SeatNo
 	AllowedAgentHosts     map[string]struct{}
+	AllowedCORSOrigins    map[string]struct{}
 	DefaultAgentTimeoutMS uint64
 	AgentHTTPTimeout      time.Duration
 }
@@ -185,6 +186,10 @@ func NewServer(
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if handled := s.handleCORS(w, r); handled {
+		return
+	}
+
 	identity, ok := s.authenticate(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -1159,6 +1164,42 @@ func parseBearerToken(authorization string) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	if !s.isCORSOriginAllowed(origin) {
+		return false
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Add("Vary", "Origin")
+
+	if r.Method != http.MethodOptions {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")) == "" {
+		return false
+	}
+
+	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+func (s *Server) isCORSOriginAllowed(origin string) bool {
+	if len(s.config.AllowedCORSOrigins) == 0 {
+		return false
+	}
+	if _, ok := s.config.AllowedCORSOrigins["*"]; ok {
+		return true
+	}
+	_, ok := s.config.AllowedCORSOrigins[origin]
+	return ok
 }
 
 func parseTableRoute(path string) (tableID string, action string, ok bool) {

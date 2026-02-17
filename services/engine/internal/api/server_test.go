@@ -160,6 +160,55 @@ func TestListTables_SeatTokenReturnsForbidden(t *testing.T) {
 	}
 }
 
+func TestCORS_PreflightAllowedOriginReturnsNoContent(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens:  map[string]struct{}{"admin": {}},
+		AllowedCORSOrigins: map[string]struct{}{"http://localhost:5173": {}},
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/tables", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusNoContent, w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected Access-Control-Allow-Origin to be set, got %q", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Methods"); got == "" {
+		t.Fatal("expected Access-Control-Allow-Methods to be set")
+	}
+}
+
+func TestCORS_AllowedOriginOnNormalRequestSetsHeader(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens:  map[string]struct{}{"admin": {}},
+		AllowedCORSOrigins: map[string]struct{}{"http://localhost:5173": {}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/tables", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("Origin", "http://localhost:5173")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected Access-Control-Allow-Origin to be set, got %q", got)
+	}
+}
+
 func TestCreateUser_Succeeds(t *testing.T) {
 	t.Parallel()
 

@@ -52,6 +52,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "AGENT_ENDPOINT_ALLOWLIST must include at least one host[:port]")
 		os.Exit(1)
 	}
+	corsAllowedOrigins := parseCORSAllowedOrigins(strings.TrimSpace(os.Getenv("CONTROLPLANE_CORS_ALLOWED_ORIGINS")))
 
 	httpTimeoutMS := uint64(domain.DefaultActionTimeoutMS)
 	if raw := strings.TrimSpace(os.Getenv("AGENT_HTTP_TIMEOUT_MS")); raw != "" {
@@ -104,6 +105,7 @@ func main() {
 		AdminBearerTokens:     adminTokens,
 		SeatBearerTokens:      seatTokens,
 		AllowedAgentHosts:     allowlist,
+		AllowedCORSOrigins:    corsAllowedOrigins,
 		DefaultAgentTimeoutMS: httpTimeoutMS,
 		AgentHTTPTimeout:      time.Duration(httpTimeoutMS) * time.Millisecond,
 	}
@@ -156,6 +158,18 @@ func parseAllowlist(raw string) map[string]struct{} {
 		hosts[host] = struct{}{}
 	}
 	return hosts
+}
+
+func parseCORSAllowedOrigins(raw string) map[string]struct{} {
+	origins := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(part)
+		if origin == "" {
+			continue
+		}
+		origins[origin] = struct{}{}
+	}
+	return origins
 }
 
 func parseAdminTokens(raw string) (map[string]struct{}, error) {
