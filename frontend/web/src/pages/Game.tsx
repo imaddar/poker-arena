@@ -6,7 +6,7 @@ import { resolveApiRuntimeConfig } from '../api/config';
 import { PokerTable } from '../components/PokerTable';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
-import { applyObserverReplayToState } from './gameObserver';
+import { loadGameState } from './gameLoader';
 import type { ActionType, GameState } from '../types';
 
 export function Game() {
@@ -29,21 +29,9 @@ export function Game() {
     setError(null);
 
     try {
-      const nextState = await api.getTableState(tableId);
-      if (!isMockMode) {
-        const latestReplay = await api.getLatestReplay(tableId);
-        const merged = applyObserverReplayToState(nextState, latestReplay);
-        setState(merged);
-      } else {
-        setState(nextState);
-      }
-      setRaiseAmount(
-        clampRaiseAmount({
-          requested: nextState.minRaise,
-          minRaise: nextState.minRaise,
-          stack: nextState.seats[2]?.stack ?? 0,
-        }),
-      );
+      const loaded = await loadGameState(api, tableId, isMockMode);
+      setState(loaded.state);
+      setRaiseAmount(loaded.raiseAmount);
     } catch (caught) {
       console.error(caught);
       setError('Could not load live schematic.');
