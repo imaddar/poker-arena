@@ -6,6 +6,7 @@ WEB_DIR="${ROOT_DIR}/frontend/web"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-local-admin-token}"
+SEAT_TOKEN="${SEAT_TOKEN:-local-seat-1-token}"
 CORS_ORIGIN="${CORS_ORIGIN:-http://localhost:5173}"
 TABLE_NAME="${TABLE_NAME:-web-smoke-table}"
 
@@ -150,6 +151,19 @@ main() {
     log "latest replay endpoint passed for table ${table_id} hand ${latest_hand_id}"
   else
     log "latest replay endpoint passed for table ${table_id} (no hand history yet)"
+  fi
+
+  LAST_STEP="latest_replay_route_seat_token"
+  api GET "/tables/${table_id}/replay/latest" "${SEAT_TOKEN}"
+  expect_code 200
+  jq_get '.table.id' >/dev/null
+  local seat_latest_hand_id
+  seat_latest_hand_id="$(printf '%s' "${LAST_BODY}" | jq -r '.latest_hand.hand_id // empty')"
+  if [[ -n "${seat_latest_hand_id}" ]]; then
+    printf '%s' "${LAST_BODY}" | jq -e '.replay.actions | type == "array"' >/dev/null || fail "expected replay.actions array for seat-token latest replay"
+    log "seat token latest replay visible for hand ${seat_latest_hand_id}"
+  else
+    log "seat token latest replay returned table-only payload (seat may not participate in latest hand)"
   fi
 
   LAST_STEP="frontend_tests"
