@@ -139,6 +139,19 @@ main() {
     fi
   fi
 
+  LAST_STEP="latest_replay_route"
+  api GET "/tables/${table_id}/replay/latest" "${ADMIN_TOKEN}"
+  expect_code 200
+  jq_get '.table.id' >/dev/null
+  local latest_hand_id
+  latest_hand_id="$(printf '%s' "${LAST_BODY}" | jq -r '.latest_hand.hand_id // empty')"
+  if [[ -n "${latest_hand_id}" ]]; then
+    printf '%s' "${LAST_BODY}" | jq -e '.replay.actions | type == "array"' >/dev/null || fail "expected replay.actions array when latest_hand exists"
+    log "latest replay endpoint passed for table ${table_id} hand ${latest_hand_id}"
+  else
+    log "latest replay endpoint passed for table ${table_id} (no hand history yet)"
+  fi
+
   LAST_STEP="frontend_tests"
   npm --prefix "${WEB_DIR}" run test:logic
   LAST_STEP="frontend_build"

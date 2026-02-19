@@ -338,6 +338,18 @@ func TestSeatToken_HistoryAllowed_ControlForbidden(t *testing.T) {
 		250*time.Millisecond,
 	)
 
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-seat-latest-empty",
+		Name:       "table-seat-latest-empty",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
 	start := StartRequest{
 		HandsToRun: 1,
 		Seats: []StartSeat{
@@ -423,6 +435,63 @@ func TestSeatToken_ReplayRedactsOpponentHoleCardsForNonShowdown(t *testing.T) {
 	}
 	if oppCards != 0 {
 		t.Fatalf("expected opponent hole cards to be redacted in non-showdown hand, got %d", oppCards)
+	}
+}
+
+func TestSeatToken_LatestReplayReturnsTableOnlyWhenSeatNotInAnyHand(t *testing.T) {
+	t.Parallel()
+
+	agentA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentA.Close()
+	agentB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAgentAction(t, w, r, false)
+	}))
+	defer agentB.Close()
+
+	repo := persistence.NewInMemoryRepository()
+	adminToken := "admin-token"
+	seatToken := "seat-3-token"
+	server := newIntegrationServerWithTokens(
+		t,
+		repo,
+		adminToken,
+		map[string]domain.SeatNo{seatToken: 3},
+		[]string{mustHost(t, agentA.URL), mustHost(t, agentB.URL)},
+		250*time.Millisecond,
+	)
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-seat-latest-empty",
+		Name:       "table-seat-latest-empty",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	start := StartRequest{
+		HandsToRun: 1,
+		Seats: []StartSeat{
+			{SeatNo: 1, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentA.URL + "/callback"},
+			{SeatNo: 2, Stack: 10_000, Status: domain.SeatStatusActive, AgentEndpoint: agentB.URL + "/callback"},
+		},
+	}
+	startTable(t, server, adminToken, "table-seat-latest-empty", start, http.StatusOK)
+	_ = waitForTerminalStatus(t, server, adminToken, "table-seat-latest-empty", 3*time.Second)
+
+	payload := getLatestReplayForTable(t, server, seatToken, "table-seat-latest-empty")
+	if payload.Table.ID != "table-seat-latest-empty" {
+		t.Fatalf("expected table id table-seat-latest-empty, got %q", payload.Table.ID)
+	}
+	if payload.LatestHand != nil {
+		t.Fatalf("expected latest_hand to be omitted, got %+v", payload.LatestHand)
+	}
+	if payload.Replay != nil {
+		t.Fatalf("expected replay to be omitted, got %+v", payload.Replay)
 	}
 }
 
@@ -542,6 +611,24 @@ func getReplay(t *testing.T, server *Server, token string, handID string) handRe
 		t.Fatalf("decode replay failed: %v", err)
 	}
 	return replay
+}
+
+func getLatestReplayForTable(t *testing.T, server *Server, token string, tableID string) latestTableReplayResponse {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/tables/"+tableID+"/replay/latest", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("latest replay request failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var payload latestTableReplayResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode latest replay failed: %v", err)
+	}
+	return payload
 }
 
 func mustHost(t *testing.T, rawURL string) string {

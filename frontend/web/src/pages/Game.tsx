@@ -6,6 +6,7 @@ import { resolveApiRuntimeConfig } from '../api/config';
 import { PokerTable } from '../components/PokerTable';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
+import { applyObserverReplayToState } from './gameObserver';
 import type { ActionType, GameState } from '../types';
 
 export function Game() {
@@ -31,14 +32,11 @@ export function Game() {
       const nextState = await api.getTableState(tableId);
       if (!isMockMode) {
         const latestReplay = await api.getLatestReplay(tableId);
-        if (latestReplay.handId) {
-          nextState.handId = latestReplay.handId;
-          nextState.actionLog = latestReplay.actionLog;
-        } else {
-          nextState.actionLog = ['No hands recorded for this table yet.'];
-        }
+        const merged = applyObserverReplayToState(nextState, latestReplay);
+        setState(merged);
+      } else {
+        setState(nextState);
       }
-      setState(nextState);
       setRaiseAmount(
         clampRaiseAmount({
           requested: nextState.minRaise,
