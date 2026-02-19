@@ -176,6 +176,12 @@ type handReplayResponse struct {
 	Analytics     replayAnalytics   `json:"analytics"`
 }
 
+type latestTableReplayResponse struct {
+	Table      tableResponse      `json:"table"`
+	LatestHand *handResponse      `json:"latest_hand,omitempty"`
+	Replay     *handReplayResponse `json:"replay,omitempty"`
+}
+
 type replayAnalytics struct {
 	TotalActions    int                   `json:"total_actions"`
 	FallbackActions int                   `json:"fallback_actions"`
@@ -291,6 +297,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+		return
+	}
+
+	if tableID, ok := parseTableLatestReplayRoute(r.URL.Path); ok {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.handleLatestReplay(w, r, identity, tableID)
 		return
 	}
 
@@ -1003,10 +1018,71 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, identity C
 		return
 	}
 
-	actions, err := s.repo.ListActions(handID)
+	replay, err := s.buildHandReplayResponse(identity, hand, redactHoleCards)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load actions")
 		return
+	}
+	writeJSON(w, http.StatusOK, replay)
+}
+
+func (s *Server) handleLatestReplay(w http.ResponseWriter, r *http.Request, identity CallerIdentity, tableID string) {
+	tableRecord, ok, err := s.repo.GetTable(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load table")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "table not found")
+		return
+	}
+
+	redactHoleCards, err := parseRedactHoleCards(r.URL.Query().Get("redact_hole_cards"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	hands, err := s.repo.ListHands(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load hands")
+		return
+	}
+
+	filtered := hands
+	if identity.Role == CallerRoleSeat {
+		filtered = make([]persistence.HandRecord, 0, len(hands))
+		for _, hand := range hands {
+			if handIncludesSeat(hand, identity.seatNo()) {
+				filtered = append(filtered, hand)
+			}
+		}
+	}
+
+	response := latestTableReplayResponse{
+		Table: mapTableRecordToResponse(tableRecord),
+	}
+	if len(filtered) == 0 {
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	latest := filtered[len(filtered)-1]
+	replay, err := s.buildHandReplayResponse(identity, latest, redactHoleCards)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load actions")
+		return
+	}
+	latestHand := mapHandRecordToResponse(latest)
+	response.LatestHand = &latestHand
+	response.Replay = &replay
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) buildHandReplayResponse(identity CallerIdentity, hand persistence.HandRecord, redactHoleCards bool) (handReplayResponse, error) {
+	actions, err := s.repo.ListActions(hand.HandID)
+	if err != nil {
+		return handReplayResponse{}, err
 	}
 	finalState := cloneHandStateForReplay(hand.FinalState)
 	applyReplayVisibility(identity, hand, &finalState)
@@ -1038,7 +1114,7 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, identity C
 		})
 	}
 
-	writeJSON(w, http.StatusOK, handReplayResponse{
+	return handReplayResponse{
 		HandID:        hand.HandID,
 		TableID:       hand.TableID,
 		HandNo:        hand.HandNo,
@@ -1049,7 +1125,7 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request, identity C
 		FinalState:    finalState,
 		Actions:       actionItems,
 		Analytics:     analytics,
-	})
+	}, nil
 }
 
 func (s *Server) runTable(ctx context.Context, tableID string, run *tableRun, runner Runner, input tablerunner.RunTableInput) {
@@ -1273,6 +1349,17 @@ func parseTableRoute(path string) (tableID string, action string, ok bool) {
 	return parts[1], parts[2], true
 }
 
+func parseTableLatestReplayRoute(path string) (tableID string, ok bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 4 || parts[0] != "tables" || parts[2] != "replay" || parts[3] != "latest" {
+		return "", false
+	}
+	if parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 func parseHandRoute(path string) (handID string, action string, ok bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 3 || parts[0] != "hands" {
@@ -1410,6 +1497,18 @@ func mapSeatRecordToResponse(record persistence.SeatRecord) seatResponse {
 		Stack:          record.Stack,
 		Status:         record.Status,
 		CreatedAt:      record.CreatedAt,
+	}
+}
+
+func mapHandRecordToResponse(record persistence.HandRecord) handResponse {
+	return handResponse{
+		HandID:        record.HandID,
+		TableID:       record.TableID,
+		HandNo:        record.HandNo,
+		StartedAt:     record.StartedAt,
+		EndedAt:       record.EndedAt,
+		FinalPhase:    record.FinalPhase,
+		WinnerSummary: append([]domain.PotAward(nil), record.WinnerSummary...),
 	}
 }
 

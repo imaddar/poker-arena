@@ -1,5 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-import type { ApiClient, HandSummary } from './types';
+import type { ApiClient, HandSummary, LatestReplay } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -233,6 +233,18 @@ class MockApi implements ApiClient {
         handNo: 1,
       },
     ];
+  }
+
+  async getLatestReplay(tableId: string): Promise<LatestReplay> {
+    await delay(100);
+    const state = this.tableState.get(tableId);
+    if (!state) {
+      return { actionLog: [] };
+    }
+    return {
+      handId: state.handId,
+      actionLog: [...state.actionLog],
+    };
   }
 
   async getHandActions(_handId: string): Promise<string[]> {

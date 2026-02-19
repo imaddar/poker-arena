@@ -30,12 +30,10 @@ export function Game() {
     try {
       const nextState = await api.getTableState(tableId);
       if (!isMockMode) {
-        const hands = await api.getTableHands(tableId);
-        if (hands.length > 0) {
-          const latest = hands[hands.length - 1];
-          const log = await api.getHandActions(latest.handId);
-          nextState.actionLog = log;
-          nextState.handId = latest.handId;
+        const latestReplay = await api.getLatestReplay(tableId);
+        if (latestReplay.handId) {
+          nextState.handId = latestReplay.handId;
+          nextState.actionLog = latestReplay.actionLog;
         } else {
           nextState.actionLog = ['No hands recorded for this table yet.'];
         }

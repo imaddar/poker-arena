@@ -131,4 +131,40 @@ describe('createHttpApiClient', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('maps latest replay payload from table replay endpoint', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          latest_hand: {
+            hand_id: 'hand-77',
+          },
+          replay: {
+            actions: [
+              {
+                street: 'river',
+                acting_seat: 1,
+                action: 'raise',
+                amount: 400,
+                is_fallback: true,
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+
+    try {
+      const api = createHttpApiClient({
+        baseUrl: 'http://127.0.0.1:8080',
+        getToken: () => 'admin-token',
+      });
+      const latest = await api.getLatestReplay('table-3');
+      assert.equal(latest.handId, 'hand-77');
+      assert.equal(latest.actionLog[0], 'RIVER S1: RAISE 400 (fallback)');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

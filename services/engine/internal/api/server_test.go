@@ -365,6 +365,147 @@ func TestCreateTableJoinAndState(t *testing.T) {
 	}
 }
 
+func TestGetLatestReplay_NoHistoryReturnsTableOnly(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-1",
+		Name:       "table-one",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/replay/latest", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	table, ok := payload["table"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected table object, got %T", payload["table"])
+	}
+	if table["id"] != "table-1" {
+		t.Fatalf("expected table id table-1, got %v", table["id"])
+	}
+	if _, ok := payload["latest_hand"]; ok {
+		t.Fatalf("expected latest_hand to be omitted when no history, got %v", payload["latest_hand"])
+	}
+	if _, ok := payload["replay"]; ok {
+		t.Fatalf("expected replay to be omitted when no history, got %v", payload["replay"])
+	}
+}
+
+func TestGetLatestReplay_ReturnsLatestHandReplay(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-1",
+		Name:       "table-one",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+	for _, hand := range []persistence.HandRecord{
+		{
+			HandID:    "hand-1",
+			TableID:   "table-1",
+			HandNo:    1,
+			StartedAt: now.Add(-2 * time.Minute),
+			FinalState: domain.HandState{
+				HandID: "hand-1",
+				Seats:  []domain.SeatState{{SeatNo: 1}, {SeatNo: 2}},
+			},
+		},
+		{
+			HandID:    "hand-2",
+			TableID:   "table-1",
+			HandNo:    2,
+			StartedAt: now.Add(-time.Minute),
+			FinalState: domain.HandState{
+				HandID: "hand-2",
+				Seats:  []domain.SeatState{{SeatNo: 1}, {SeatNo: 2}},
+			},
+		},
+	} {
+		if err := repo.CreateHand(hand); err != nil {
+			t.Fatalf("CreateHand failed: %v", err)
+		}
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-2",
+		Street:     domain.StreetPreflop,
+		ActingSeat: 1,
+		Action:     domain.ActionCall,
+		At:         now,
+	}); err != nil {
+		t.Fatalf("AppendAction #1 failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-2",
+		Street:     domain.StreetFlop,
+		ActingSeat: 2,
+		Action:     domain.ActionCheck,
+		At:         now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("AppendAction #2 failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-1/replay/latest", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	latest, ok := payload["latest_hand"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected latest_hand object, got %T", payload["latest_hand"])
+	}
+	if latest["hand_id"] != "hand-2" {
+		t.Fatalf("expected latest hand id hand-2, got %v", latest["hand_id"])
+	}
+	replay, ok := payload["replay"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected replay object, got %T", payload["replay"])
+	}
+	if replay["hand_id"] != "hand-2" {
+		t.Fatalf("expected replay hand id hand-2, got %v", replay["hand_id"])
+	}
+	actions, ok := replay["actions"].([]any)
+	if !ok || len(actions) != 2 {
+		t.Fatalf("expected 2 replay actions, got %v", replay["actions"])
+	}
+}
+
 func TestStart_WithPersistedSeatsOnly_Succeeds(t *testing.T) {
 	t.Parallel()
 
