@@ -146,10 +146,10 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
   };
 
   return {
-    async login(username: string): Promise<User> {
-      const token = options.getToken();
+    async login(username: string, authToken?: string): Promise<User> {
+      const token = authToken?.trim() || options.getToken().trim();
       if (!token) {
-        throw new Error('Missing VITE_ADMIN_TOKEN for control-plane authentication.');
+        throw new Error('Missing auth token for control-plane authentication.');
       }
       return {
         id: `local-${username.trim().toLowerCase().replace(/\s+/g, '-')}`,

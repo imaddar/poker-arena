@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 export function Home() {
   const [username, setUsername] = useState('');
+  const [authToken, setAuthToken] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const { login, isLoading, error } = useAuth();
   const navigate = useNavigate();
@@ -18,7 +19,7 @@ export function Home() {
     }
 
     setLocalError(null);
-    const success = await login(trimmed);
+    const success = await login(trimmed, authToken);
     if (success) {
       navigate('/lobby');
     }
@@ -49,7 +50,14 @@ export function Home() {
 
           <div className="form-group">
             <label htmlFor="auth">API_TOKEN / AUTH_KEY</label>
-            <input id="auth" type="password" placeholder="••••••••••••" disabled />
+            <input
+              id="auth"
+              type="password"
+              value={authToken}
+              onChange={(event) => setAuthToken(event.target.value)}
+              placeholder="local-admin-token or local-seat-1-token"
+              disabled={isLoading}
+            />
           </div>
 
           {(localError || error) && <p className="error-text">{localError ?? error}</p>}

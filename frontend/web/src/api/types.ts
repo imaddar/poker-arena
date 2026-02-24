@@ -15,7 +15,7 @@ export interface LatestReplay {
 }
 
 export interface ApiClient {
-  login(username: string): Promise<User>;
+  login(username: string, authToken?: string): Promise<User>;
   getTables(): Promise<Table[]>;
   joinTable(tableId: string): Promise<{ success: boolean; message?: string }>;
   leaveTable(tableId: string): Promise<{ success: boolean }>;

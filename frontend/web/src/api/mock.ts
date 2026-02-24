@@ -147,13 +147,13 @@ class MockApi implements ApiClient {
 
   private tableState = new Map<string, GameState>();
 
-  async login(username: string): Promise<User> {
+  async login(username: string, authToken?: string): Promise<User> {
     await delay(250);
 
     return {
       id: `u-${Date.now()}`,
       name: username.trim(),
-      token: `tok-${Date.now()}`,
+      token: authToken?.trim() || `tok-${Date.now()}`,
     };
   }
 

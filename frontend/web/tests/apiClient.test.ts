@@ -36,13 +36,50 @@ describe('createHttpApiClient', () => {
     }
   });
 
-  it('requires an admin token during login for real API mode', async () => {
+  it('requires a token during login for real API mode', async () => {
     const api = createHttpApiClient({
       baseUrl: 'http://127.0.0.1:8080',
       getToken: () => '',
     });
 
-    await assert.rejects(() => api.login('operator'), /Missing VITE_ADMIN_TOKEN/);
+    await assert.rejects(() => api.login('operator'), /Missing auth token/);
+  });
+
+  it('uses explicit login token when default token is empty', async () => {
+    const api = createHttpApiClient({
+      baseUrl: 'http://127.0.0.1:8080',
+      getToken: () => '',
+    });
+
+    const user = await api.login('observer', 'seat-1-token');
+    assert.equal(user.token, 'seat-1-token');
+  });
+
+  it('uses latest token from token provider for authenticated requests', async () => {
+    const originalFetch = globalThis.fetch;
+    let activeToken = 'admin-token';
+    let lastAuthHeader = '';
+    globalThis.fetch = async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      lastAuthHeader = headers.get('Authorization') ?? '';
+      return new Response('[]', { status: 200 });
+    };
+
+    try {
+      const api = createHttpApiClient({
+        baseUrl: 'http://127.0.0.1:8080',
+        getToken: () => activeToken,
+      });
+
+      await api.getTables();
+      assert.equal(lastAuthHeader, 'Bearer admin-token');
+
+      activeToken = 'seat-1-token';
+      await api.getTables();
+      assert.equal(lastAuthHeader, 'Bearer seat-1-token');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('maps table state payload into a game state model', async () => {

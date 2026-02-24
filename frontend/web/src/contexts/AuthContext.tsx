@@ -1,10 +1,10 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
-import { api } from '../api';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { api, clearApiAuthToken, setApiAuthToken } from '../api';
 import type { User } from '../types';
 
 interface AuthContextType {
   user: User | null;
-  login: (username: string) => Promise<boolean>;
+  login: (username: string, authToken?: string) => Promise<boolean>;
   logout: () => void;
   isLoading: boolean;
   error: string | null;
@@ -32,12 +32,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const login = async (username: string): Promise<boolean> => {
+  useEffect(() => {
+    if (user?.token) {
+      setApiAuthToken(user.token);
+      return;
+    }
+    clearApiAuthToken();
+  }, [user]);
+
+  const login = async (username: string, authToken?: string): Promise<boolean> => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const profile = await api.login(username);
+      const profile = await api.login(username, authToken);
       setUser(profile);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
       return true;
@@ -52,6 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     setUser(null);
+    clearApiAuthToken();
     localStorage.removeItem(STORAGE_KEY);
   };
 
