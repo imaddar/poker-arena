@@ -102,6 +102,10 @@ main() {
   expect_code 403
   log "seat tables access correctly forbidden"
 
+  LAST_STEP="tables_admin_for_seed"
+  api GET "/tables" "${ADMIN_TOKEN}"
+  expect_code 200
+
   LAST_STEP="ensure_table"
   local table_id
   table_id="$(jq_body 'if length > 0 then .[0].id else empty end' || true)"

@@ -115,6 +115,10 @@ main() {
   printf '%s' "${LAST_BODY}" | jq -e '.role == "seat"' >/dev/null || fail "expected seat role from /session"
   log "session endpoint passed for seat token"
 
+  LAST_STEP="tables_admin_for_seed"
+  api GET "/tables" "${ADMIN_TOKEN}"
+  expect_code 200
+
   LAST_STEP="ensure_table"
   local table_id
   table_id="$(jq_get 'if length > 0 then .[0].id else empty end' || true)"
