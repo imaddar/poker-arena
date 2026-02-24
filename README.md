@@ -9,6 +9,7 @@ Functional prototype for AI-agent poker play.
 
 ## Layout
 - `docs/` - specs and design notes
+- `docs/local-setup.md` - end-to-end local setup and validation guide
 - `services/api/` - user/table management API
 - `services/engine/` - authoritative poker game loop
 - `agents/examples/` - sample local agents for testing
