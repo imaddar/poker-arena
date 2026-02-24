@@ -19,7 +19,17 @@ function loadStoredUser(): User | null {
       return null;
     }
 
-    return JSON.parse(raw) as User;
+    const parsed = JSON.parse(raw) as Partial<User>;
+    if (typeof parsed.name !== 'string' || typeof parsed.token !== 'string' || typeof parsed.id !== 'string') {
+      return null;
+    }
+    return {
+      id: parsed.id,
+      name: parsed.name,
+      token: parsed.token,
+      role: parsed.role === 'observer' ? 'observer' : 'admin',
+      seatNo: typeof parsed.seatNo === 'number' ? parsed.seatNo : undefined,
+    };
   } catch {
     return null;
   }
@@ -39,6 +49,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     clearApiAuthToken();
   }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    let active = true;
+    const refreshSession = async () => {
+      try {
+        const session = await api.getSession();
+        if (!active) {
+          return;
+        }
+        setUser((prev) => {
+          if (!prev) {
+            return prev;
+          }
+          const next: User = { ...prev, role: session.role, seatNo: session.seatNo };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
+      } catch {
+        // Keep existing local session when backend is temporarily unavailable.
+      }
+    };
+
+    void refreshSession();
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
 
   const login = async (username: string, authToken?: string): Promise<boolean> => {
     setIsLoading(true);

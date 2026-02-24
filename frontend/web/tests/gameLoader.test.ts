@@ -27,6 +27,9 @@ function makeApi(replay: LatestReplay): ApiClient {
     async login(_username: string): Promise<User> {
       throw new Error('unused in test');
     },
+    async getSession() {
+      return { role: 'admin' as const };
+    },
     async getTables(): Promise<Table[]> {
       throw new Error('unused in test');
     },

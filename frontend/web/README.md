@@ -10,7 +10,8 @@ The app can run against the mock API or the engine control-plane API.
 - `VITE_USE_MOCK_API=false` uses HTTP client mode.
 - If `VITE_USE_MOCK_API` is unset, the app defaults to mock mode.
 - `VITE_API_BASE_URL` sets the backend base URL in HTTP client mode.
-- `VITE_ADMIN_TOKEN` sets the bearer token used by HTTP client mode.
+- `VITE_ADMIN_TOKEN` optionally seeds a default bearer token in HTTP client mode.
+  You can also enter a token at sign-in time (admin or seat token).
 
 Example:
 
@@ -28,7 +29,8 @@ npm run dev
 cp .env.example .env.local
 ```
 2. Ensure backend is running with:
-- `CONTROLPLANE_ADMIN_TOKENS` including the token in `VITE_ADMIN_TOKEN`
+- `CONTROLPLANE_ADMIN_TOKENS` including at least one admin token
+- `CONTROLPLANE_SEAT_TOKENS` if you want observer seat-token sign-in
 - `CONTROLPLANE_CORS_ALLOWED_ORIGINS` including `http://localhost:5173`
 3. Start frontend:
 ```bash

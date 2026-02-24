@@ -1,7 +1,11 @@
+export type UserRole = 'admin' | 'observer';
+
 export interface User {
   id: string;
   name: string;
   token: string;
+  role: UserRole;
+  seatNo?: number;
 }
 
 export interface Table {

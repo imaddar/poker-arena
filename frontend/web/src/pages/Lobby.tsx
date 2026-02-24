@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
+import { useAuth } from '../contexts/AuthContext';
+import { canUseAdminTableDirectory, isObserverUser } from '../lib/access';
 import { filterTables, type LobbyFilters, type StakeFilter, type StatusFilter } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
 import type { Table } from '../types';
@@ -12,7 +14,11 @@ const DEFAULT_FILTERS: LobbyFilters = {
 };
 
 export function Lobby() {
+  const { user } = useAuth();
+  const isObserver = isObserverUser(user);
+  const canLoadDirectory = canUseAdminTableDirectory(user);
   const [tables, setTables] = useState<Table[]>([]);
+  const [observerTableId, setObserverTableId] = useState('');
   const [filters, setFilters] = useState<LobbyFilters>(DEFAULT_FILTERS);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,8 +40,12 @@ export function Lobby() {
   };
 
   useEffect(() => {
+    if (!canLoadDirectory) {
+      setIsLoading(false);
+      return;
+    }
     void loadTables();
-  }, []);
+  }, [canLoadDirectory]);
 
   const visibleTables = useMemo(() => filterTables({ tables, filters }), [tables, filters]);
 
@@ -52,12 +62,42 @@ export function Lobby() {
   const setStatus = (status: StatusFilter) => setFilters((prev) => ({ ...prev, status }));
   const setStake = (stake: StakeFilter) => setFilters((prev) => ({ ...prev, stake }));
 
+  const openObserverTable = () => {
+    const tableId = observerTableId.trim();
+    if (!tableId) {
+      setError('TABLE_ID is required for observer view.');
+      return;
+    }
+    setError(null);
+    navigate(`/game/${tableId}`);
+  };
+
   return (
     <section>
       <h2>Open Table Archive</h2>
       <span className="sub-header">FILTER BY VOLATILITY_INDEX // SELECT PROTOCOL</span>
 
-      <div className="lobby-controls">
+      {isObserver && (
+        <div className="ledger-box">
+          <h3>Observer Access</h3>
+          <p className="ledger-note">
+            Seat-scoped token detected{user?.seatNo ? ` (Seat ${user.seatNo})` : ''}. Enter a table id to watch replay.
+          </p>
+          <div className="lobby-controls">
+            <input
+              type="text"
+              value={observerTableId}
+              placeholder="TABLE_ID"
+              onChange={(event) => setObserverTableId(event.target.value)}
+            />
+            <button type="button" className="enter-btn" onClick={openObserverTable}>
+              OPEN_OBSERVER_VIEW
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isObserver && <div className="lobby-controls">
         <input
           type="text"
           value={filters.query}
@@ -81,11 +121,11 @@ export function Lobby() {
         <button type="button" className="enter-btn" onClick={loadTables} disabled={isLoading}>
           {isLoading ? 'SYNCING...' : 'REFRESH'}
         </button>
-      </div>
+      </div>}
 
       {error && <p className="error-text">{error}</p>}
 
-      <div className="table-list">
+      {!isObserver && <div className="table-list">
         {visibleTables.map((table) => {
           const full = table.players >= table.maxSeats;
 
@@ -110,7 +150,7 @@ export function Lobby() {
         })}
 
         {!isLoading && visibleTables.length === 0 && <p className="empty-text">NO_TABLES_MATCH_FILTERS</p>}
-      </div>
+      </div>}
     </section>
   );
 }

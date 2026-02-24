@@ -1,5 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-import type { ApiClient, HandSummary, LatestReplay } from './types';
+import type { ApiClient, HandSummary, LatestReplay, SessionInfo } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -147,14 +147,30 @@ class MockApi implements ApiClient {
 
   private tableState = new Map<string, GameState>();
 
+  private resolveSession(authToken?: string): SessionInfo {
+    const token = authToken?.trim().toLowerCase() ?? '';
+    if (token.includes('seat')) {
+      return { role: 'observer', seatNo: HERO_SEAT + 1 };
+    }
+    return { role: 'admin' };
+  }
+
   async login(username: string, authToken?: string): Promise<User> {
     await delay(250);
+    const session = this.resolveSession(authToken);
 
     return {
       id: `u-${Date.now()}`,
       name: username.trim(),
       token: authToken?.trim() || `tok-${Date.now()}`,
+      role: session.role,
+      seatNo: session.seatNo,
     };
+  }
+
+  async getSession(authToken?: string): Promise<SessionInfo> {
+    await delay(50);
+    return this.resolveSession(authToken);
   }
 
   async getTables(): Promise<Table[]> {

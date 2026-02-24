@@ -46,13 +46,22 @@ describe('createHttpApiClient', () => {
   });
 
   it('uses explicit login token when default token is empty', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ role: 'seat', seat_no: 1 }), { status: 200 });
+
     const api = createHttpApiClient({
       baseUrl: 'http://127.0.0.1:8080',
       getToken: () => '',
     });
 
-    const user = await api.login('observer', 'seat-1-token');
-    assert.equal(user.token, 'seat-1-token');
+    try {
+      const user = await api.login('observer', 'seat-1-token');
+      assert.equal(user.token, 'seat-1-token');
+      assert.equal(user.role, 'observer');
+      assert.equal(user.seatNo, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('uses latest token from token provider for authenticated requests', async () => {
@@ -208,6 +217,23 @@ describe('createHttpApiClient', () => {
       assert.equal(latest.totalActions, 1);
       assert.equal(latest.fallbackActions, 1);
       assert.equal(latest.actionLog[0], 'RIVER S1: RAISE 400 (fallback)');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('maps /session role payload into frontend session info', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ role: 'admin' }), { status: 200 });
+
+    try {
+      const api = createHttpApiClient({
+        baseUrl: 'http://127.0.0.1:8080',
+        getToken: () => 'admin-token',
+      });
+      const session = await api.getSession();
+      assert.equal(session.role, 'admin');
+      assert.equal(session.seatNo, undefined);
     } finally {
       globalThis.fetch = originalFetch;
     }

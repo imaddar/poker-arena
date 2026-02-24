@@ -1,5 +1,5 @@
-import type { ActionRequest, GameState, Player, Table, User } from '../types';
-import type { ApiClient, HandSummary, LatestReplay } from './types';
+import type { ActionRequest, GameState, Player, Table, User, UserRole } from '../types';
+import type { ApiClient, HandSummary, LatestReplay, SessionInfo } from './types';
 
 interface HttpApiClientOptions {
   baseUrl: string;
@@ -52,6 +52,11 @@ interface LatestReplayDTO {
       fallback_actions: number;
     };
   };
+}
+
+interface SessionDTO {
+  role: 'admin' | 'seat';
+  seat_no?: number;
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -119,7 +124,7 @@ function mapTableState(dto: TableStateDTO): GameState {
 export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
 
-  const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const request = async <T>(path: string, init?: RequestInit, authToken?: string): Promise<T> => {
     if (!baseUrl) {
       throw new Error('VITE_API_BASE_URL is required when VITE_USE_MOCK_API is false.');
     }
@@ -127,7 +132,7 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
     const headers = new Headers(init?.headers);
     headers.set('Content-Type', 'application/json');
 
-    const token = options.getToken();
+    const token = authToken?.trim() || options.getToken().trim();
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
     }
@@ -145,17 +150,33 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
     return (await response.json()) as T;
   };
 
+  const mapSession = (dto: SessionDTO): SessionInfo => {
+    const role: UserRole = dto.role === 'admin' ? 'admin' : 'observer';
+    return {
+      role,
+      seatNo: dto.seat_no,
+    };
+  };
+
   return {
     async login(username: string, authToken?: string): Promise<User> {
       const token = authToken?.trim() || options.getToken().trim();
       if (!token) {
         throw new Error('Missing auth token for control-plane authentication.');
       }
+      const session = await this.getSession(token);
       return {
         id: `local-${username.trim().toLowerCase().replace(/\s+/g, '-')}`,
         name: username.trim(),
         token,
+        role: session.role,
+        seatNo: session.seatNo,
       };
+    },
+
+    async getSession(authToken?: string): Promise<SessionInfo> {
+      const payload = await request<SessionDTO>('/session', { method: 'GET' }, authToken);
+      return mapSession(payload);
     },
 
     async getTables(): Promise<Table[]> {

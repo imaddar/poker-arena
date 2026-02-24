@@ -1,4 +1,4 @@
-import type { ActionRequest, GameState, Table, User } from '../types';
+import type { ActionRequest, GameState, Table, User, UserRole } from '../types';
 
 export interface HandSummary {
   handId: string;
@@ -14,8 +14,14 @@ export interface LatestReplay {
   actionLog: string[];
 }
 
+export interface SessionInfo {
+  role: UserRole;
+  seatNo?: number;
+}
+
 export interface ApiClient {
   login(username: string, authToken?: string): Promise<User>;
+  getSession(authToken?: string): Promise<SessionInfo>;
   getTables(): Promise<Table[]>;
   joinTable(tableId: string): Promise<{ success: boolean; message?: string }>;
   leaveTable(tableId: string): Promise<{ success: boolean }>;

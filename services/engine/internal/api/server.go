@@ -87,18 +87,18 @@ type StartSeat struct {
 }
 
 type tableStatusResponse struct {
-	TableID        string                      `json:"table_id"`
-	Status         persistence.TableRunStatus  `json:"status"`
-	StartedAt      time.Time                   `json:"started_at"`
-	EndedAt        *time.Time                  `json:"ended_at,omitempty"`
-	Error          string                      `json:"error,omitempty"`
-	HandsRequested int                         `json:"hands_requested"`
-	HandsCompleted int                         `json:"hands_completed"`
-	TotalActions   int                         `json:"total_actions"`
-	TotalFallbacks int                         `json:"total_fallbacks"`
-	CurrentHandNo  uint64                      `json:"current_hand_no"`
-	HandsPersisted int                         `json:"hands_persisted"`
-	ActionsPersisted int                       `json:"actions_persisted"`
+	TableID          string                     `json:"table_id"`
+	Status           persistence.TableRunStatus `json:"status"`
+	StartedAt        time.Time                  `json:"started_at"`
+	EndedAt          *time.Time                 `json:"ended_at,omitempty"`
+	Error            string                     `json:"error,omitempty"`
+	HandsRequested   int                        `json:"hands_requested"`
+	HandsCompleted   int                        `json:"hands_completed"`
+	TotalActions     int                        `json:"total_actions"`
+	TotalFallbacks   int                        `json:"total_fallbacks"`
+	CurrentHandNo    uint64                     `json:"current_hand_no"`
+	HandsPersisted   int                        `json:"hands_persisted"`
+	ActionsPersisted int                        `json:"actions_persisted"`
 }
 
 type tableResponse struct {
@@ -177,9 +177,14 @@ type handReplayResponse struct {
 }
 
 type latestTableReplayResponse struct {
-	Table      tableResponse      `json:"table"`
-	LatestHand *handResponse      `json:"latest_hand,omitempty"`
+	Table      tableResponse       `json:"table"`
+	LatestHand *handResponse       `json:"latest_hand,omitempty"`
 	Replay     *handReplayResponse `json:"replay,omitempty"`
+}
+
+type sessionResponse struct {
+	Role   CallerRole     `json:"role"`
+	SeatNo *domain.SeatNo `json:"seat_no,omitempty"`
 }
 
 type replayAnalytics struct {
@@ -242,6 +247,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	identity, ok := s.authenticate(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if r.URL.Path == "/session" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.handleSession(w, identity)
 		return
 	}
 
@@ -362,6 +376,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusNotFound, "route not found")
+}
+
+func (s *Server) handleSession(w http.ResponseWriter, identity CallerIdentity) {
+	response := sessionResponse{
+		Role: identity.Role,
+	}
+	if identity.Role == CallerRoleSeat {
+		response.SeatNo = identity.Seat
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, tableID string) {

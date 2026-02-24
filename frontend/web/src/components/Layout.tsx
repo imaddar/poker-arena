@@ -47,7 +47,10 @@ export function Layout() {
         <div className="topbar__right">
           <div className="user-chip">
             <CircleUserRound size={16} />
-            <span>{user?.name ?? 'Guest'}</span>
+            <span>
+              {user?.name ?? 'Guest'}
+              {user ? ` (${user.role})` : ''}
+            </span>
           </div>
           {user && (
             <button type="button" className="ghost-btn" onClick={handleLogout}>

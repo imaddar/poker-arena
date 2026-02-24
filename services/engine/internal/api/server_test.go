@@ -165,6 +165,63 @@ func TestListTables_SeatTokenReturnsForbidden(t *testing.T) {
 	}
 }
 
+func TestGetSession_AdminTokenReturnsAdminRole(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+
+	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode session payload: %v", err)
+	}
+	if payload["role"] != "admin" {
+		t.Fatalf("expected role admin, got %v", payload["role"])
+	}
+	if _, ok := payload["seat_no"]; ok {
+		t.Fatalf("expected seat_no to be omitted for admin token, got %v", payload["seat_no"])
+	}
+}
+
+func TestGetSession_SeatTokenReturnsSeatRoleAndSeatNo(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	req.Header.Set("Authorization", "Bearer seat1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode session payload: %v", err)
+	}
+	if payload["role"] != "seat" {
+		t.Fatalf("expected role seat, got %v", payload["role"])
+	}
+	if payload["seat_no"] != float64(1) {
+		t.Fatalf("expected seat_no=1, got %v", payload["seat_no"])
+	}
+}
+
 func TestCORS_PreflightAllowedOriginReturnsNoContent(t *testing.T) {
 	t.Parallel()
 
