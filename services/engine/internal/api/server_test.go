@@ -500,9 +500,22 @@ func TestGetLatestReplay_ReturnsLatestHandReplay(t *testing.T) {
 	if replay["hand_id"] != "hand-2" {
 		t.Fatalf("expected replay hand id hand-2, got %v", replay["hand_id"])
 	}
+	if latest["hand_no"] != float64(2) {
+		t.Fatalf("expected latest hand number 2, got %v", latest["hand_no"])
+	}
 	actions, ok := replay["actions"].([]any)
 	if !ok || len(actions) != 2 {
 		t.Fatalf("expected 2 replay actions, got %v", replay["actions"])
+	}
+	analytics, ok := replay["analytics"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected replay analytics object, got %T", replay["analytics"])
+	}
+	if analytics["total_actions"] != float64(2) {
+		t.Fatalf("expected total_actions=2, got %v", analytics["total_actions"])
+	}
+	if analytics["fallback_actions"] != float64(0) {
+		t.Fatalf("expected fallback_actions=0, got %v", analytics["fallback_actions"])
 	}
 }
 

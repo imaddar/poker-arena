@@ -43,9 +43,14 @@ interface ActionDTO {
 interface LatestReplayDTO {
   latest_hand?: {
     hand_id: string;
+    hand_no: number;
   };
   replay?: {
     actions: ActionDTO[];
+    analytics?: {
+      total_actions: number;
+      fallback_actions: number;
+    };
   };
 }
 
@@ -176,6 +181,9 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
       const actions = payload.replay?.actions ?? [];
       return {
         handId: payload.latest_hand?.hand_id,
+        handNo: payload.latest_hand?.hand_no,
+        totalActions: payload.replay?.analytics?.total_actions,
+        fallbackActions: payload.replay?.analytics?.fallback_actions,
         actionLog: actions.map((item) => {
           const amount = item.amount == null ? '' : ` ${item.amount}`;
           const fallback = item.is_fallback ? ' (fallback)' : '';

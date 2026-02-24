@@ -7,6 +7,7 @@ import { PokerTable } from '../components/PokerTable';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
 import { loadGameState } from './gameLoader';
+import type { LatestReplay } from '../api/types';
 import type { ActionType, GameState } from '../types';
 
 export function Game() {
@@ -19,6 +20,7 @@ export function Game() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [latestReplay, setLatestReplay] = useState<LatestReplay | null>(null);
 
   const loadState = async () => {
     if (!tableId) {
@@ -32,6 +34,7 @@ export function Game() {
       const loaded = await loadGameState(api, tableId, isMockMode);
       setState(loaded.state);
       setRaiseAmount(loaded.raiseAmount);
+      setLatestReplay(loaded.latestReplay ?? null);
     } catch (caught) {
       console.error(caught);
       setError('Could not load live schematic.');
@@ -103,6 +106,12 @@ export function Game() {
 
       {error && <p className="error-text">{error}</p>}
       {!isMockMode && <p className="sub-header">OBSERVER_MODE // ACTIONS_DISABLED</p>}
+      {!isMockMode && (
+        <p className="sub-header">
+          LATEST_HAND: #{latestReplay?.handNo ?? '-'} // ACTIONS: {latestReplay?.totalActions ?? 0} // FALLBACKS:{' '}
+          {latestReplay?.fallbackActions ?? 0}
+        </p>
+      )}
 
       <div className="game-grid">
         <PokerTable

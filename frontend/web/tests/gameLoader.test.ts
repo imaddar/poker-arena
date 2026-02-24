@@ -58,12 +58,18 @@ describe('loadGameState', () => {
   it('applies latest replay action log for backend observer mode', async () => {
     const api = makeApi({
       handId: 'hand-77',
+      handNo: 77,
+      totalActions: 1,
+      fallbackActions: 1,
       actionLog: ['RIVER S1: RAISE 400 (fallback)'],
     });
     const loaded = await loadGameState(api, 'table-1', false);
     assert.equal(loaded.state.handId, 'hand-77');
     assert.deepEqual(loaded.state.actionLog, ['RIVER S1: RAISE 400 (fallback)']);
     assert.equal(loaded.raiseAmount, 200);
+    assert.equal(loaded.latestReplay?.handNo, 77);
+    assert.equal(loaded.latestReplay?.totalActions, 1);
+    assert.equal(loaded.latestReplay?.fallbackActions, 1);
   });
 
   it('shows no-history message when backend replay has no hand', async () => {

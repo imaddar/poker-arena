@@ -243,6 +243,9 @@ class MockApi implements ApiClient {
     }
     return {
       handId: state.handId,
+      handNo: 1,
+      totalActions: state.actionLog.length,
+      fallbackActions: 0,
       actionLog: [...state.actionLog],
     };
   }

@@ -8,6 +8,9 @@ export interface HandSummary {
 
 export interface LatestReplay {
   handId?: string;
+  handNo?: number;
+  totalActions?: number;
+  fallbackActions?: number;
   actionLog: string[];
 }
 

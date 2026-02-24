@@ -139,6 +139,7 @@ describe('createHttpApiClient', () => {
         JSON.stringify({
           latest_hand: {
             hand_id: 'hand-77',
+            hand_no: 77,
           },
           replay: {
             actions: [
@@ -150,6 +151,10 @@ describe('createHttpApiClient', () => {
                 is_fallback: true,
               },
             ],
+            analytics: {
+              total_actions: 1,
+              fallback_actions: 1,
+            },
           },
         }),
         { status: 200 },
@@ -162,6 +167,9 @@ describe('createHttpApiClient', () => {
       });
       const latest = await api.getLatestReplay('table-3');
       assert.equal(latest.handId, 'hand-77');
+      assert.equal(latest.handNo, 77);
+      assert.equal(latest.totalActions, 1);
+      assert.equal(latest.fallbackActions, 1);
       assert.equal(latest.actionLog[0], 'RIVER S1: RAISE 400 (fallback)');
     } finally {
       globalThis.fetch = originalFetch;
