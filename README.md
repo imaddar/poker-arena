@@ -102,3 +102,28 @@ Troubleshooting:
 export SMOKE_PORT=8081
 BASE_URL=http://127.0.0.1:${SMOKE_PORT} ./scripts/web-smoke-local.sh
 ```
+
+## Local Automation Scripts
+
+Use these scripts to validate the current frontend/backend integration quickly.
+
+Backend auth and role checks:
+```bash
+BASE_URL=http://127.0.0.1:8081 \
+ADMIN_TOKEN=local-admin-token \
+SEAT_TOKEN=local-seat-1-token \
+./scripts/test-backend-auth-local.sh
+```
+
+Frontend tests and build:
+```bash
+./scripts/test-frontend-local.sh
+```
+
+All checks (backend auth + frontend + full web smoke):
+```bash
+BASE_URL=http://127.0.0.1:8081 \
+ADMIN_TOKEN=local-admin-token \
+SEAT_TOKEN=local-seat-1-token \
+./scripts/test-all-local.sh
+```
