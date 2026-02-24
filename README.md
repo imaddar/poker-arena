@@ -48,3 +48,57 @@ npm --prefix frontend/web run dev
 - Selecting a table opens `/game/:tableId`.
 - Game page in backend mode shows observer log entries from hand history.
 - `./scripts/web-smoke-local.sh` exits successfully.
+
+## Known Good Run (Backend Mode)
+
+This is the exact local flow that is known to pass end-to-end.
+
+1. Start control-plane on `:8081`:
+```bash
+cd /Users/imaddar/git-repos/poker-arena
+export CONTROLPLANE_ADMIN_TOKENS=local-admin-token
+export CONTROLPLANE_SEAT_TOKENS=1:local-seat-1-token,2:local-seat-2-token
+export AGENT_ENDPOINT_ALLOWLIST=127.0.0.1:9001,127.0.0.1:9002
+export CONTROLPLANE_CORS_ALLOWED_ORIGINS=http://localhost:5173
+export DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/poker_arena?sslmode=disable
+go -C services/engine run ./cmd/controlplane -addr :8081
+```
+
+2. Seed one table:
+```bash
+cd /Users/imaddar/git-repos/poker-arena
+BASE_URL=http://127.0.0.1:8081 ADMIN_API_TOKEN=local-admin-token ./scripts/api-local.sh create-table smoke 6 50 100
+```
+
+3. Configure frontend:
+```bash
+cd /Users/imaddar/git-repos/poker-arena
+cat > frontend/web/.env.local <<'EOF'
+VITE_USE_MOCK_API=false
+VITE_API_BASE_URL=http://127.0.0.1:8081
+VITE_ADMIN_TOKEN=local-admin-token
+EOF
+```
+
+4. Run frontend:
+```bash
+npm --prefix frontend/web run dev
+```
+
+5. Run smoke:
+```bash
+BASE_URL=http://127.0.0.1:8081 ./scripts/web-smoke-local.sh
+```
+
+Expected success marker:
+```text
+[web-smoke] PASS: web smoke checks completed
+```
+
+Troubleshooting:
+- If `GET /tables/:id/replay/latest` returns `route not found`, restart control-plane from latest local commit.
+- Optional helper env:
+```bash
+export SMOKE_PORT=8081
+BASE_URL=http://127.0.0.1:${SMOKE_PORT} ./scripts/web-smoke-local.sh
+```
