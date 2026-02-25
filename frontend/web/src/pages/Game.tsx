@@ -9,7 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
 import { loadGameState } from './gameLoader';
-import type { HandReplay, LatestReplay } from '../api/types';
+import type { HandReplay, LatestReplay, PendingAdminAction } from '../api/types';
 import type { ActionType, GameState } from '../types';
 
 export function Game() {
@@ -27,6 +27,8 @@ export function Game() {
   const [latestReplay, setLatestReplay] = useState<LatestReplay | null>(null);
   const [adminReplay, setAdminReplay] = useState<HandReplay | null>(null);
   const [liveCursor, setLiveCursor] = useState(0);
+  const [adminSeatNo, setAdminSeatNo] = useState(1);
+  const [pendingAdminAction, setPendingAdminAction] = useState<PendingAdminAction | null>(null);
 
   const loadAdminReplay = async (latest: LatestReplay | null) => {
     if (!latest?.handId || !isAdmin || isMockMode) {
@@ -65,6 +67,10 @@ export function Game() {
               }
             : prev,
         );
+      }
+      if (!isMockMode && isAdmin) {
+        const pending = await api.getPendingAdminAction(tableId, adminSeatNo);
+        setPendingAdminAction(pending);
       }
     } catch (caught) {
       console.error(caught);
@@ -106,13 +112,15 @@ export function Game() {
             );
           }
           await loadAdminReplay(latestReplay);
+          const pending = await api.getPendingAdminAction(tableId, adminSeatNo);
+          setPendingAdminAction(pending);
         } catch {
           // Keep prior state and retry on next poll tick.
         }
       })();
     }, 3000);
     return () => clearInterval(interval);
-  }, [isMockMode, tableId, isAdmin, liveCursor, state?.handId, latestReplay]);
+  }, [isMockMode, tableId, isAdmin, liveCursor, state?.handId, latestReplay, adminSeatNo]);
 
   const streetLabel = useMemo(() => state?.street.toUpperCase() ?? '-', [state]);
 
@@ -142,6 +150,35 @@ export function Game() {
     }
 
     navigate('/lobby');
+  };
+
+  const handleJoinAdminSeat = async () => {
+    if (!tableId) {
+      return;
+    }
+    try {
+      await api.joinAdminSeat(tableId, adminSeatNo);
+      setError(null);
+      const pending = await api.getPendingAdminAction(tableId, adminSeatNo);
+      setPendingAdminAction(pending);
+    } catch (caught) {
+      console.error(caught);
+      setError('Failed to join admin seat.');
+    }
+  };
+
+  const handleSubmitAdminAction = async (action: string, amount?: number) => {
+    if (!tableId || !pendingAdminAction) {
+      return;
+    }
+    try {
+      await api.submitAdminAction(tableId, pendingAdminAction.seatNo, action, amount);
+      setError(null);
+      await loadState();
+    } catch (caught) {
+      console.error(caught);
+      setError('Failed to submit admin action.');
+    }
   };
 
   if (loading && !state) {
@@ -225,6 +262,51 @@ export function Game() {
               })}
             </ol>
           </div>
+        </section>
+      )}
+      {!isMockMode && isAdmin && (
+        <section className="ledger-box" aria-label="Admin action controls">
+          <h3>Admin Seat Controls</h3>
+          <div className="lobby-controls">
+            <label htmlFor="admin-seat-no">SEAT_NO</label>
+            <input
+              id="admin-seat-no"
+              type="number"
+              min={1}
+              max={6}
+              value={adminSeatNo}
+              onChange={(event) => setAdminSeatNo(Math.max(1, Number(event.target.value) || 1))}
+            />
+            <button type="button" className="enter-btn" onClick={handleJoinAdminSeat}>
+              JOIN_ADMIN_SEAT
+            </button>
+          </div>
+          {pendingAdminAction ? (
+            <div>
+              <p className="ledger-note">
+                PENDING_ACTION // HAND={pendingAdminAction.handId} // SEAT={pendingAdminAction.seatNo} // TO_CALL=
+                {pendingAdminAction.toCall} // POT={pendingAdminAction.pot}
+              </p>
+              <div className="action-stack">
+                {pendingAdminAction.legalActions.map((action) => (
+                  <button key={`admin-action-${action}`} type="button" className="enter-btn" onClick={() => handleSubmitAdminAction(action)}>
+                    {action.toUpperCase()}
+                  </button>
+                ))}
+                {pendingAdminAction.legalActions.includes('raise') && pendingAdminAction.minRaiseTo != null && (
+                  <button
+                    type="button"
+                    className="enter-btn"
+                    onClick={() => handleSubmitAdminAction('raise', pendingAdminAction.minRaiseTo)}
+                  >
+                    RAISE_TO_{pendingAdminAction.minRaiseTo}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <p className="ledger-note">No pending admin action for this seat yet.</p>
+          )}
         </section>
       )}
 

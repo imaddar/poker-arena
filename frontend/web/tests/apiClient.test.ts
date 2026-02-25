@@ -333,4 +333,47 @@ describe('createHttpApiClient', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('maps pending admin action payload and handles 404 as no pending action', async () => {
+    const originalFetch = globalThis.fetch;
+    let call = 0;
+    globalThis.fetch = async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response(
+          JSON.stringify({
+            table_id: 'table-9',
+            hand_id: 'hand-9',
+            seat_no: 1,
+            hole_cards: ['As', 'Kh'],
+            board: ['2c', '7d', 'Tc'],
+            pot: 300,
+            to_call: 100,
+            min_raise_to: 250,
+            legal_actions: ['fold', 'call', 'raise'],
+            action_deadline_ms: 2000,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ error: 'no pending action for seat' }), { status: 404 });
+    };
+
+    try {
+      const api = createHttpApiClient({
+        baseUrl: 'http://127.0.0.1:8080',
+        getToken: () => 'admin-token',
+      });
+      const pending = await api.getPendingAdminAction('table-9', 1);
+      assert.equal(pending?.tableId, 'table-9');
+      assert.equal(pending?.handId, 'hand-9');
+      assert.equal(pending?.seatNo, 1);
+      assert.equal(pending?.legalActions.includes('raise'), true);
+
+      const none = await api.getPendingAdminAction('table-9', 1);
+      assert.equal(none, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

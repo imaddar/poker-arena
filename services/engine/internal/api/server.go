@@ -232,6 +232,12 @@ type joinTableRequest struct {
 	Status         domain.SeatStatus `json:"status"`
 }
 
+type joinAdminTableRequest struct {
+	SeatNo uint8             `json:"seat_no"`
+	Stack  uint32            `json:"stack"`
+	Status domain.SeatStatus `json:"status"`
+}
+
 func NewServer(
 	repo persistence.Repository,
 	runnerFactory func(provider tablerunner.ActionProvider, cfg tablerunner.RunnerConfig) Runner,
@@ -363,6 +369,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.handleJoinTable(w, r, tableID)
+		case r.Method == http.MethodPost && action == "join-admin":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
+			s.handleJoinAdminTable(w, r, tableID)
+		case r.Method == http.MethodPost && action == "admin-action":
+			if !identity.isAdmin() {
+				writeError(w, http.StatusForbidden, "forbidden")
+				return
+			}
+			s.handleAdminActionSubmit(w, r, tableID)
 		case r.Method == http.MethodGet && action == "hands":
 			s.handleHands(w, identity, tableID)
 		case r.Method == http.MethodGet && action == "live":
@@ -370,6 +388,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+		return
+	}
+
+	if tableID, ok := parseTableAdminActionPendingRoute(r.URL.Path); ok {
+		if !identity.isAdmin() {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.handleAdminActionPending(w, r, tableID)
 		return
 	}
 
@@ -780,6 +811,89 @@ func (s *Server) handleJoinTable(w http.ResponseWriter, r *http.Request, tableID
 		return
 	}
 	writeJSON(w, http.StatusOK, mapSeatRecordToResponse(record))
+}
+
+func (s *Server) handleJoinAdminTable(w http.ResponseWriter, r *http.Request, tableID string) {
+	var req joinAdminTableRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+	tableRecord, ok, err := s.repo.GetTable(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load table")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "table not found")
+		return
+	}
+	seatNo, err := domain.NewSeatNo(req.SeatNo, tableRecord.MaxSeats)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Status == "" {
+		req.Status = domain.SeatStatusActive
+	}
+	if !isSeatStatusAllowed(req.Status) {
+		writeError(w, http.StatusBadRequest, "invalid seat status")
+		return
+	}
+	if req.Stack == 0 {
+		writeError(w, http.StatusBadRequest, "stack must be greater than zero")
+		return
+	}
+
+	agentID, versionID, err := s.ensureAdminHumanSeatResources(tableID, seatNo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to prepare admin seat resources")
+		return
+	}
+
+	record := persistence.SeatRecord{
+		ID:             newID("seat"),
+		TableID:        tableID,
+		SeatNo:         seatNo,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		Stack:          req.Stack,
+		Status:         req.Status,
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := s.repo.UpsertSeat(record); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to join admin seat")
+		return
+	}
+	writeJSON(w, http.StatusOK, mapSeatRecordToResponse(record))
+}
+
+func (s *Server) ensureAdminHumanSeatResources(tableID string, seatNo domain.SeatNo) (string, string, error) {
+	userID := "admin-human-user"
+	agentID := fmt.Sprintf("admin-human-agent-%s-%d", tableID, seatNo)
+	versionID := fmt.Sprintf("admin-human-version-%s-%d", tableID, seatNo)
+
+	_ = s.repo.CreateUser(persistence.UserRecord{
+		ID:        userID,
+		Name:      "Admin Human",
+		Token:     "admin-human-token",
+		CreatedAt: time.Now().UTC(),
+	})
+	_ = s.repo.CreateAgent(persistence.AgentRecord{
+		ID:        agentID,
+		UserID:    userID,
+		Name:      fmt.Sprintf("admin-seat-%d", seatNo),
+		CreatedAt: time.Now().UTC(),
+	})
+	if err := s.repo.CreateAgentVersion(persistence.AgentVersionRecord{
+		ID:          versionID,
+		AgentID:     agentID,
+		Version:     1,
+		EndpointURL: fmt.Sprintf("human://admin-seat/%d", seatNo),
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil && !errors.Is(err, persistence.ErrAgentVersionExists) {
+		return "", "", err
+	}
+	return agentID, versionID, nil
 }
 
 func (s *Server) handleTableState(w http.ResponseWriter, tableID string) {
@@ -1195,6 +1309,45 @@ func (s *Server) handleTableLive(w http.ResponseWriter, r *http.Request, identit
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) handleAdminActionPending(w http.ResponseWriter, r *http.Request, tableID string) {
+	seatRaw := strings.TrimSpace(r.URL.Query().Get("seat_no"))
+	if seatRaw == "" {
+		writeError(w, http.StatusBadRequest, "seat_no query parameter is required")
+		return
+	}
+	seat, err := strconv.Atoi(seatRaw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid seat_no query parameter")
+		return
+	}
+	pending, ok := DefaultHumanActionHub().GetPending(tableID, seat)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no pending action for seat")
+		return
+	}
+	writeJSON(w, http.StatusOK, pending)
+}
+
+func (s *Server) handleAdminActionSubmit(w http.ResponseWriter, r *http.Request, tableID string) {
+	var req HumanActionRequest
+	if ok := decodeStrictJSON(w, r, &req); !ok {
+		return
+	}
+	if strings.TrimSpace(req.Action) == "" {
+		writeError(w, http.StatusBadRequest, "action is required")
+		return
+	}
+	if req.SeatNo <= 0 {
+		writeError(w, http.StatusBadRequest, "seat_no must be a positive integer")
+		return
+	}
+	if err := DefaultHumanActionHub().SubmitAction(tableID, req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
 func (s *Server) buildHandReplayResponse(identity CallerIdentity, hand persistence.HandRecord, redactHoleCards bool) (handReplayResponse, error) {
 	actions, err := s.repo.ListActions(hand.HandID)
 	if err != nil {
@@ -1335,13 +1488,18 @@ func validateStartRequest(tableID string, req StartRequest, serverCfg ServerConf
 		}
 		if isSeatActiveForStart(seat.Status) {
 			parsedEndpoint, err := url.Parse(seat.AgentEndpoint)
-			if err != nil || parsedEndpoint == nil || parsedEndpoint.Host == "" {
+			if err != nil || parsedEndpoint == nil {
 				return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d has invalid agent_endpoint", seatNo)
 			}
-			if parsedEndpoint.Scheme != "http" && parsedEndpoint.Scheme != "https" {
+			if parsedEndpoint.Scheme != "http" && parsedEndpoint.Scheme != "https" && parsedEndpoint.Scheme != "human" {
 				return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d has unsupported endpoint scheme %q", seatNo, parsedEndpoint.Scheme)
 			}
-			if len(serverCfg.AllowedAgentHosts) > 0 {
+			if parsedEndpoint.Scheme != "human" {
+				if parsedEndpoint.Host == "" {
+					return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d has invalid agent_endpoint", seatNo)
+				}
+			}
+			if parsedEndpoint.Scheme != "human" && len(serverCfg.AllowedAgentHosts) > 0 {
 				if _, ok := serverCfg.AllowedAgentHosts[parsedEndpoint.Host]; !ok {
 					return tablerunner.RunTableInput{}, cfg, 0, nil, fmt.Errorf("active seat %d endpoint host %q is not allowlisted", seatNo, parsedEndpoint.Host)
 				}
@@ -1463,6 +1621,17 @@ func parseTableRoute(path string) (tableID string, action string, ok bool) {
 		return "", "", false
 	}
 	return parts[1], parts[2], true
+}
+
+func parseTableAdminActionPendingRoute(path string) (tableID string, ok bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 4 || parts[0] != "tables" || parts[2] != "admin-action" || parts[3] != "pending" {
+		return "", false
+	}
+	if parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }
 
 func parseTableLatestReplayRoute(path string) (tableID string, ok bool) {

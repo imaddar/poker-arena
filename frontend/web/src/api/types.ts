@@ -46,6 +46,19 @@ export interface TableLive {
   nextActionCursor: number;
 }
 
+export interface PendingAdminAction {
+  tableId: string;
+  handId: string;
+  seatNo: number;
+  holeCards: string[];
+  board: string[];
+  pot: number;
+  toCall: number;
+  minRaiseTo?: number;
+  legalActions: string[];
+  actionDeadlineMs: number;
+}
+
 export interface ApiClient {
   login(username: string, authToken?: string): Promise<User>;
   getSession(authToken?: string): Promise<SessionInfo>;
@@ -58,5 +71,8 @@ export interface ApiClient {
   getHandActions(handId: string): Promise<string[]>;
   getHandReplay(handId: string): Promise<HandReplay>;
   getTableLive(tableId: string, afterAction?: number): Promise<TableLive>;
+  joinAdminSeat(tableId: string, seatNo: number, stack?: number): Promise<{ success: boolean }>;
+  getPendingAdminAction(tableId: string, seatNo: number): Promise<PendingAdminAction | null>;
+  submitAdminAction(tableId: string, seatNo: number, action: string, amount?: number): Promise<{ success: boolean }>;
   submitAction(tableId: string, action: ActionRequest): Promise<GameState>;
 }

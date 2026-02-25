@@ -222,6 +222,122 @@ func TestGetSession_SeatTokenReturnsSeatRoleAndSeatNo(t *testing.T) {
 	}
 }
 
+func TestJoinAdminTable_CreatesHumanAdminSeat(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-admin-join",
+		Name:       "table-admin-join",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodPost, "/tables/table-admin-join/join-admin", strings.NewReader(`{"seat_no":1,"stack":10000,"status":"active"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	stateReq := httptest.NewRequest(http.MethodGet, "/tables/table-admin-join/state", nil)
+	stateReq.Header.Set("Authorization", "Bearer admin")
+	stateW := httptest.NewRecorder()
+	server.ServeHTTP(stateW, stateReq)
+	if stateW.Code != http.StatusOK {
+		t.Fatalf("state request failed: %d body=%s", stateW.Code, stateW.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(stateW.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode state payload failed: %v", err)
+	}
+	seats, ok := payload["seats"].([]any)
+	if !ok || len(seats) != 1 {
+		t.Fatalf("expected one seat in state, got %v", payload["seats"])
+	}
+	seat, ok := seats[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected seat object, got %T", seats[0])
+	}
+	if seat["seat_no"] != float64(1) {
+		t.Fatalf("expected seat_no=1, got %v", seat["seat_no"])
+	}
+}
+
+func TestAdminActionPendingAndSubmitFlow(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(persistence.NewInMemoryRepository(), nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	state := domain.HandState{
+		TableID:    "table-admin-action",
+		HandID:     "hand-admin-action",
+		ActingSeat: 1,
+		CurrentBet: 100,
+		MinRaiseTo: 200,
+		Seats: []domain.SeatState{
+			{SeatNo: 1, Stack: 1000, CommittedInRound: 0, Status: domain.SeatStatusActive},
+			{SeatNo: 2, Stack: 1000, CommittedInRound: 100, Status: domain.SeatStatusActive},
+		},
+		HoleCards: []domain.SeatCards{
+			{SeatNo: 1, Cards: []domain.Card{{Rank: 14, Suit: domain.SuitSpades}, {Rank: 13, Suit: domain.SuitSpades}}},
+		},
+	}
+
+	resultCh := make(chan domain.Action, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		action, err := DefaultHumanActionHub().WaitForAction(context.Background(), state, 1000)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- action
+	}()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		pendingReq := httptest.NewRequest(http.MethodGet, "/tables/table-admin-action/admin-action/pending?seat_no=1", nil)
+		pendingReq.Header.Set("Authorization", "Bearer admin")
+		pendingW := httptest.NewRecorder()
+		server.ServeHTTP(pendingW, pendingReq)
+		if pendingW.Code == http.StatusOK {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/tables/table-admin-action/admin-action", strings.NewReader(`{"seat_no":1,"action":"call"}`))
+	submitReq.Header.Set("Authorization", "Bearer admin")
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.ServeHTTP(submitW, submitReq)
+	if submitW.Code != http.StatusOK {
+		t.Fatalf("expected submit status %d, got %d body=%s", http.StatusOK, submitW.Code, submitW.Body.String())
+	}
+
+	select {
+	case action := <-resultCh:
+		if action.Kind != domain.ActionCall {
+			t.Fatalf("expected call action, got %s", action.Kind)
+		}
+	case err := <-errCh:
+		t.Fatalf("wait for human action returned error: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for human action result")
+	}
+}
+
 func TestCORS_PreflightAllowedOriginReturnsNoContent(t *testing.T) {
 	t.Parallel()
 

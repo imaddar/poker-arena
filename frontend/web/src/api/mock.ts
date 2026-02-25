@@ -1,5 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-import type { ApiClient, HandReplay, HandSummary, LatestReplay, SessionInfo, TableLive } from './types';
+import type { ApiClient, HandReplay, HandSummary, LatestReplay, PendingAdminAction, SessionInfo, TableLive } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -326,6 +326,36 @@ class MockApi implements ApiClient {
       actionLog: state.actionLog.slice(afterAction),
       nextActionCursor: state.actionLog.length,
     };
+  }
+
+  async joinAdminSeat(_tableId: string, _seatNo: number, _stack = 10000): Promise<{ success: boolean }> {
+    await delay(75);
+    return { success: true };
+  }
+
+  async getPendingAdminAction(tableId: string, seatNo: number): Promise<PendingAdminAction | null> {
+    await delay(75);
+    const state = this.tableState.get(tableId);
+    if (!state) {
+      return null;
+    }
+    return {
+      tableId,
+      handId: state.handId,
+      seatNo,
+      holeCards: ['As', 'Kd'],
+      board: state.communityCards.map((card) => `${card.rank}${card.suit}`),
+      pot: state.pot,
+      toCall: state.toCall,
+      minRaiseTo: state.minRaise,
+      legalActions: ['fold', state.toCall > 0 ? 'call' : 'check'],
+      actionDeadlineMs: 2000,
+    };
+  }
+
+  async submitAdminAction(_tableId: string, _seatNo: number, _action: string, _amount?: number): Promise<{ success: boolean }> {
+    await delay(75);
+    return { success: true };
   }
 
   async submitAction(tableId: string, action: ActionRequest): Promise<GameState> {

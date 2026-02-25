@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -68,6 +69,11 @@ func (p seatTimeoutProvider) NextAction(ctx context.Context, state domain.HandSt
 	timeout := p.defaultTimeout
 	if value, ok := p.seatTimeouts[state.ActingSeat]; ok {
 		timeout = value
+	}
+
+	parsed, err := url.Parse(endpoint)
+	if err == nil && parsed != nil && parsed.Scheme == "human" {
+		return api.DefaultHumanActionHub().WaitForAction(ctx, state, timeout)
 	}
 
 	return p.client.NextAction(ctx, agentclient.Request{

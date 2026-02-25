@@ -57,6 +57,15 @@ function makeApi(replay: LatestReplay): ApiClient {
     async getTableLive(_tableId: string, _afterAction?: number) {
       return { actionLog: [], nextActionCursor: 0 };
     },
+    async joinAdminSeat(_tableId: string, _seatNo: number, _stack?: number) {
+      return { success: true };
+    },
+    async getPendingAdminAction(_tableId: string, _seatNo: number) {
+      return null;
+    },
+    async submitAdminAction(_tableId: string, _seatNo: number, _action: string, _amount?: number) {
+      return { success: true };
+    },
     async submitAction(_tableId: string) {
       return state;
     },

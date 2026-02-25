@@ -1,5 +1,15 @@
 import type { ActionRequest, GameState, Player, Table, User, UserRole } from '../types';
-import type { ApiClient, HandReplay, HandSummary, LatestReplay, ReplayAction, ReplayCard, SessionInfo, TableLive } from './types';
+import type {
+  ApiClient,
+  HandReplay,
+  HandSummary,
+  LatestReplay,
+  PendingAdminAction,
+  ReplayAction,
+  ReplayCard,
+  SessionInfo,
+  TableLive,
+} from './types';
 
 interface HttpApiClientOptions {
   baseUrl: string;
@@ -83,6 +93,19 @@ interface TableLiveDTO {
   };
   actions: ActionDTO[];
   next_action_cursor: number;
+}
+
+interface PendingAdminActionDTO {
+  table_id: string;
+  hand_id: string;
+  seat_no: number;
+  hole_cards: string[];
+  board: string[];
+  pot: number;
+  to_call: number;
+  min_raise_to?: number;
+  legal_actions: string[];
+  action_deadline_ms: number;
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -323,6 +346,58 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
           return `${item.street.toUpperCase()} S${item.acting_seat}: ${item.action.toUpperCase()}${amount}${fallback}`;
         }),
       };
+    },
+
+    async joinAdminSeat(tableId: string, seatNo: number, stack = 10000): Promise<{ success: boolean }> {
+      await request(`/tables/${tableId}/join-admin`, {
+        method: 'POST',
+        body: JSON.stringify({
+          seat_no: seatNo,
+          stack,
+          status: 'active',
+        }),
+      });
+      return { success: true };
+    },
+
+    async getPendingAdminAction(tableId: string, seatNo: number): Promise<PendingAdminAction | null> {
+      try {
+        const payload = await request<PendingAdminActionDTO>(`/tables/${tableId}/admin-action/pending?seat_no=${seatNo}`, {
+          method: 'GET',
+        });
+        return {
+          tableId: payload.table_id,
+          handId: payload.hand_id,
+          seatNo: payload.seat_no,
+          holeCards: payload.hole_cards ?? [],
+          board: payload.board ?? [],
+          pot: payload.pot,
+          toCall: payload.to_call,
+          minRaiseTo: payload.min_raise_to,
+          legalActions: payload.legal_actions ?? [],
+          actionDeadlineMs: payload.action_deadline_ms,
+        };
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('(404)')) {
+          return null;
+        }
+        throw error;
+      }
+    },
+
+    async submitAdminAction(tableId: string, seatNo: number, action: string, amount?: number): Promise<{ success: boolean }> {
+      const payload: Record<string, unknown> = {
+        seat_no: seatNo,
+        action,
+      };
+      if (amount != null) {
+        payload.amount = amount;
+      }
+      await request(`/tables/${tableId}/admin-action`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      return { success: true };
     },
 
     async submitAction(tableId: string, _action: ActionRequest): Promise<GameState> {
