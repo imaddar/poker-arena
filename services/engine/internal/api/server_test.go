@@ -576,6 +576,167 @@ func TestGetLatestReplay_ReturnsLatestHandReplay(t *testing.T) {
 	}
 }
 
+func TestGetTableLive_NoHistoryReturnsEmptyActionsAndCursorZero(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-live-1",
+		Name:       "table-live",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-live-1/live", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	actions, ok := payload["actions"].([]any)
+	if !ok {
+		t.Fatalf("expected actions array, got %T", payload["actions"])
+	}
+	if len(actions) != 0 {
+		t.Fatalf("expected empty actions, got %d", len(actions))
+	}
+	if payload["next_action_cursor"] != float64(0) {
+		t.Fatalf("expected next_action_cursor=0, got %v", payload["next_action_cursor"])
+	}
+	if _, exists := payload["latest_hand"]; exists {
+		t.Fatalf("expected latest_hand omitted when no history, got %v", payload["latest_hand"])
+	}
+}
+
+func TestGetTableLive_AfterActionFiltersActions(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-live-2",
+		Name:       "table-live",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+	if err := repo.CreateHand(persistence.HandRecord{
+		HandID:    "hand-live-1",
+		TableID:   "table-live-2",
+		HandNo:    1,
+		StartedAt: now,
+		FinalState: domain.HandState{
+			HandID: "hand-live-1",
+			Seats:  []domain.SeatState{{SeatNo: 1}, {SeatNo: 2}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateHand failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-live-1",
+		Street:     domain.StreetPreflop,
+		ActingSeat: 1,
+		Action:     domain.ActionCall,
+		At:         now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("AppendAction #1 failed: %v", err)
+	}
+	if err := repo.AppendAction(persistence.ActionRecord{
+		HandID:     "hand-live-1",
+		Street:     domain.StreetFlop,
+		ActingSeat: 2,
+		Action:     domain.ActionCheck,
+		At:         now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("AppendAction #2 failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-live-2/live?after_action=1", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	latest, ok := payload["latest_hand"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected latest_hand object, got %T", payload["latest_hand"])
+	}
+	if latest["hand_id"] != "hand-live-1" {
+		t.Fatalf("expected hand-live-1, got %v", latest["hand_id"])
+	}
+	actions, ok := payload["actions"].([]any)
+	if !ok {
+		t.Fatalf("expected actions array, got %T", payload["actions"])
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action after cursor filter, got %d", len(actions))
+	}
+	first, ok := actions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected action object, got %T", actions[0])
+	}
+	if first["acting_seat"] != float64(2) {
+		t.Fatalf("expected filtered action acting_seat=2, got %v", first["acting_seat"])
+	}
+	if payload["next_action_cursor"] != float64(2) {
+		t.Fatalf("expected next_action_cursor=2, got %v", payload["next_action_cursor"])
+	}
+}
+
+func TestGetTableLive_InvalidAfterActionReturnsBadRequest(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	now := time.Now().UTC()
+	if err := repo.CreateTable(persistence.TableRecord{
+		ID:         "table-live-3",
+		Name:       "table-live",
+		MaxSeats:   6,
+		SmallBlind: 50,
+		BigBlind:   100,
+		Status:     string(persistence.TableRunStatusIdle),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	server := NewServer(repo, nil, nil, ServerConfig{AdminBearerTokens: map[string]struct{}{"admin": {}}})
+	req := httptest.NewRequest(http.MethodGet, "/tables/table-live-3/live?after_action=-1", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
 func TestStart_WithPersistedSeatsOnly_Succeeds(t *testing.T) {
 	t.Parallel()
 

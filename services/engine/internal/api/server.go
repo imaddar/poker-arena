@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -180,6 +181,13 @@ type latestTableReplayResponse struct {
 	Table      tableResponse       `json:"table"`
 	LatestHand *handResponse       `json:"latest_hand,omitempty"`
 	Replay     *handReplayResponse `json:"replay,omitempty"`
+}
+
+type tableLiveResponse struct {
+	Table            tableResponse    `json:"table"`
+	LatestHand       *handResponse    `json:"latest_hand,omitempty"`
+	Actions          []actionResponse `json:"actions"`
+	NextActionCursor int              `json:"next_action_cursor"`
 }
 
 type sessionResponse struct {
@@ -357,6 +365,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleJoinTable(w, r, tableID)
 		case r.Method == http.MethodGet && action == "hands":
 			s.handleHands(w, identity, tableID)
+		case r.Method == http.MethodGet && action == "live":
+			s.handleTableLive(w, r, identity, tableID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -1103,6 +1113,88 @@ func (s *Server) handleLatestReplay(w http.ResponseWriter, r *http.Request, iden
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) handleTableLive(w http.ResponseWriter, r *http.Request, identity CallerIdentity, tableID string) {
+	tableRecord, ok, err := s.repo.GetTable(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load table")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "table not found")
+		return
+	}
+
+	afterAction, err := parseAfterActionCursor(r.URL.Query().Get("after_action"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	hands, err := s.repo.ListHands(tableID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load hands")
+		return
+	}
+
+	filtered := hands
+	if identity.Role == CallerRoleSeat {
+		filtered = make([]persistence.HandRecord, 0, len(hands))
+		for _, hand := range hands {
+			if handIncludesSeat(hand, identity.seatNo()) {
+				filtered = append(filtered, hand)
+			}
+		}
+	}
+
+	response := tableLiveResponse{
+		Table:            mapTableRecordToResponse(tableRecord),
+		Actions:          make([]actionResponse, 0),
+		NextActionCursor: 0,
+	}
+	if len(filtered) == 0 {
+		if afterAction != 0 {
+			writeError(w, http.StatusBadRequest, "after_action is out of range")
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	latest := filtered[len(filtered)-1]
+	actions, err := s.repo.ListActions(latest.HandID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load actions")
+		return
+	}
+	if afterAction > len(actions) {
+		writeError(w, http.StatusBadRequest, "after_action is out of range")
+		return
+	}
+
+	response.LatestHand = &handResponse{
+		HandID:        latest.HandID,
+		TableID:       latest.TableID,
+		HandNo:        latest.HandNo,
+		StartedAt:     latest.StartedAt,
+		EndedAt:       latest.EndedAt,
+		FinalPhase:    latest.FinalPhase,
+		WinnerSummary: append([]domain.PotAward(nil), latest.WinnerSummary...),
+	}
+	response.NextActionCursor = len(actions)
+	for _, action := range actions[afterAction:] {
+		response.Actions = append(response.Actions, actionResponse{
+			HandID:     action.HandID,
+			Street:     action.Street,
+			ActingSeat: action.ActingSeat,
+			Action:     action.Action,
+			Amount:     action.Amount,
+			IsFallback: action.IsFallback,
+			At:         action.At,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) buildHandReplayResponse(identity CallerIdentity, hand persistence.HandRecord, redactHoleCards bool) (handReplayResponse, error) {
 	actions, err := s.repo.ListActions(hand.HandID)
 	if err != nil {
@@ -1419,6 +1511,18 @@ func parseRedactHoleCards(raw string) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid redact_hole_cards query value %q; expected true or false", raw)
 	}
+}
+
+func parseAfterActionCursor(raw string) (int, error) {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return 0, nil
+	}
+	cursor, err := strconv.Atoi(normalized)
+	if err != nil || cursor < 0 {
+		return 0, fmt.Errorf("invalid after_action query value %q; expected non-negative integer", raw)
+	}
+	return cursor, nil
 }
 
 func cloneHandStateForReplay(state domain.HandState) domain.HandState {
