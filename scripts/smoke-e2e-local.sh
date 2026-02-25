@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE_DIR="${ROOT_DIR}/services/engine"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
+FRONTEND_URL="${FRONTEND_URL:-http://localhost:5173}"
 CONTROL_ADDR="${CONTROL_ADDR:-:8080}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-local-admin-token}"
 SEAT1_TOKEN="${SEAT1_TOKEN:-local-seat-1-token}"
@@ -344,6 +345,7 @@ main() {
 
   log "PASS: full smoke flow completed"
   log "table_id=${table_id} hand_id=${hand_id}"
+  log "frontend_game_url=${FRONTEND_URL}/game/${table_id}"
   log "logs: ${CONTROL_LOG}, ${AGENT_A_LOG}, ${AGENT_B_LOG}"
 }
 
