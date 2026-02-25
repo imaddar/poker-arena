@@ -54,6 +54,9 @@ function makeApi(replay: LatestReplay): ApiClient {
     async getHandReplay(_handId: string) {
       return { handId: 'unused', board: [], holeCardsBySeat: {}, actions: [] };
     },
+    async getTableLive(_tableId: string, _afterAction?: number) {
+      return { actionLog: [], nextActionCursor: 0 };
+    },
     async submitAction(_tableId: string) {
       return state;
     },

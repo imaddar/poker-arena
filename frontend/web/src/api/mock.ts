@@ -1,5 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-import type { ApiClient, HandReplay, HandSummary, LatestReplay, SessionInfo } from './types';
+import type { ApiClient, HandReplay, HandSummary, LatestReplay, SessionInfo, TableLive } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -308,6 +308,23 @@ class MockApi implements ApiClient {
       board: [],
       holeCardsBySeat: {},
       actions: [],
+    };
+  }
+
+  async getTableLive(tableId: string, afterAction = 0): Promise<TableLive> {
+    await delay(75);
+    const state = this.tableState.get(tableId);
+    if (!state) {
+      return {
+        actionLog: [],
+        nextActionCursor: 0,
+      };
+    }
+    return {
+      handId: state.handId,
+      handNo: 1,
+      actionLog: state.actionLog.slice(afterAction),
+      nextActionCursor: state.actionLog.length,
     };
   }
 

@@ -291,4 +291,46 @@ describe('createHttpApiClient', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('maps table live payload with cursor-based actions', async () => {
+    const originalFetch = globalThis.fetch;
+    let lastUrl = '';
+    globalThis.fetch = async (input) => {
+      lastUrl = String(input);
+      return new Response(
+        JSON.stringify({
+          latest_hand: {
+            hand_id: 'hand-live-1',
+            hand_no: 1,
+          },
+          actions: [
+            {
+              street: 'turn',
+              acting_seat: 2,
+              action: 'bet',
+              amount: 250,
+              is_fallback: false,
+            },
+          ],
+          next_action_cursor: 4,
+        }),
+        { status: 200 },
+      );
+    };
+
+    try {
+      const api = createHttpApiClient({
+        baseUrl: 'http://127.0.0.1:8080',
+        getToken: () => 'admin-token',
+      });
+      const live = await api.getTableLive('table-9', 3);
+      assert.equal(lastUrl.endsWith('/tables/table-9/live?after_action=3'), true);
+      assert.equal(live.handId, 'hand-live-1');
+      assert.equal(live.handNo, 1);
+      assert.equal(live.nextActionCursor, 4);
+      assert.equal(live.actionLog[0], 'TURN S2: BET 250');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

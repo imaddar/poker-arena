@@ -1,5 +1,5 @@
 import type { ActionRequest, GameState, Player, Table, User, UserRole } from '../types';
-import type { ApiClient, HandReplay, HandSummary, LatestReplay, ReplayAction, ReplayCard, SessionInfo } from './types';
+import type { ApiClient, HandReplay, HandSummary, LatestReplay, ReplayAction, ReplayCard, SessionInfo, TableLive } from './types';
 
 interface HttpApiClientOptions {
   baseUrl: string;
@@ -74,6 +74,15 @@ interface HandReplayDTO {
     }>;
   };
   actions: ActionDTO[];
+}
+
+interface TableLiveDTO {
+  latest_hand?: {
+    hand_id: string;
+    hand_no: number;
+  };
+  actions: ActionDTO[];
+  next_action_cursor: number;
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -299,6 +308,20 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
         board: (payload.final_state.board ?? []).map(mapReplayCard),
         holeCardsBySeat,
         actions: (payload.actions ?? []).map(mapReplayAction),
+      };
+    },
+
+    async getTableLive(tableId: string, afterAction = 0): Promise<TableLive> {
+      const payload = await request<TableLiveDTO>(`/tables/${tableId}/live?after_action=${afterAction}`, { method: 'GET' });
+      return {
+        handId: payload.latest_hand?.hand_id,
+        handNo: payload.latest_hand?.hand_no,
+        nextActionCursor: payload.next_action_cursor ?? 0,
+        actionLog: (payload.actions ?? []).map((item) => {
+          const amount = item.amount == null ? '' : ` ${item.amount}`;
+          const fallback = item.is_fallback ? ' (fallback)' : '';
+          return `${item.street.toUpperCase()} S${item.acting_seat}: ${item.action.toUpperCase()}${amount}${fallback}`;
+        }),
       };
     },
 

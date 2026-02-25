@@ -26,6 +26,7 @@ export function Game() {
   const [logOpen, setLogOpen] = useState(false);
   const [latestReplay, setLatestReplay] = useState<LatestReplay | null>(null);
   const [adminReplay, setAdminReplay] = useState<HandReplay | null>(null);
+  const [liveCursor, setLiveCursor] = useState(0);
 
   const loadAdminReplay = async (latest: LatestReplay | null) => {
     if (!latest?.handId || !isAdmin || isMockMode) {
@@ -52,6 +53,19 @@ export function Game() {
       const latest = loaded.latestReplay ?? null;
       setLatestReplay(latest);
       await loadAdminReplay(latest);
+      if (!isMockMode) {
+        const live = await api.getTableLive(tableId, 0);
+        setLiveCursor(live.nextActionCursor);
+        setState((prev) =>
+          prev
+            ? {
+                ...prev,
+                handId: live.handId ?? prev.handId,
+                actionLog: live.actionLog.length > 0 ? live.actionLog : prev.actionLog,
+              }
+            : prev,
+        );
+      }
     } catch (caught) {
       console.error(caught);
       setError('Could not load live schematic.');
@@ -69,10 +83,36 @@ export function Game() {
       return;
     }
     const interval = setInterval(() => {
-      void loadState();
+      void (async () => {
+        if (!tableId) {
+          return;
+        }
+        try {
+          const live = await api.getTableLive(tableId, liveCursor);
+          setLiveCursor(live.nextActionCursor);
+          if (live.handId && live.handId !== state?.handId) {
+            await loadState();
+            return;
+          }
+          if (live.actionLog.length > 0) {
+            setState((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    handId: live.handId ?? prev.handId,
+                    actionLog: [...prev.actionLog, ...live.actionLog],
+                  }
+                : prev,
+            );
+          }
+          await loadAdminReplay(latestReplay);
+        } catch {
+          // Keep prior state and retry on next poll tick.
+        }
+      })();
     }, 3000);
     return () => clearInterval(interval);
-  }, [isMockMode, tableId, isAdmin]);
+  }, [isMockMode, tableId, isAdmin, liveCursor, state?.handId, latestReplay]);
 
   const streetLabel = useMemo(() => state?.street.toUpperCase() ?? '-', [state]);
 

@@ -39,6 +39,13 @@ export interface HandReplay {
   actions: ReplayAction[];
 }
 
+export interface TableLive {
+  handId?: string;
+  handNo?: number;
+  actionLog: string[];
+  nextActionCursor: number;
+}
+
 export interface ApiClient {
   login(username: string, authToken?: string): Promise<User>;
   getSession(authToken?: string): Promise<SessionInfo>;
@@ -50,5 +57,6 @@ export interface ApiClient {
   getTableHands(tableId: string): Promise<HandSummary[]>;
   getHandActions(handId: string): Promise<string[]>;
   getHandReplay(handId: string): Promise<HandReplay>;
+  getTableLive(tableId: string, afterAction?: number): Promise<TableLive>;
   submitAction(tableId: string, action: ActionRequest): Promise<GameState>;
 }
