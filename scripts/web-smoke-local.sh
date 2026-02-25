@@ -72,6 +72,11 @@ jq_get() {
   printf '%s' "${LAST_BODY}" | jq -er "${expr}" 2>/dev/null || fail "jq parse failed: ${expr}"
 }
 
+jq_optional() {
+  local expr="$1"
+  printf '%s' "${LAST_BODY}" | jq -r "${expr}" 2>/dev/null || true
+}
+
 main() {
   require_cmd curl
   require_cmd jq
@@ -121,7 +126,7 @@ main() {
 
   LAST_STEP="ensure_table"
   local table_id
-  table_id="$(jq_get 'if length > 0 then .[0].id else empty end' || true)"
+  table_id="$(jq_optional '.[0].id // empty')"
   if [[ -z "${table_id}" ]]; then
     api POST "/tables" "${ADMIN_TOKEN}" "{\"name\":\"${TABLE_NAME}\",\"max_seats\":6,\"small_blind\":50,\"big_blind\":100}"
     expect_code 200
