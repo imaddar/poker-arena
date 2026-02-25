@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../contexts/AuthContext';
-import { canUseAdminTableDirectory, isObserverUser } from '../lib/access';
+import { canManageControlPlane, canUseAdminTableDirectory, isObserverUser } from '../lib/access';
 import { filterTables, type LobbyFilters, type StakeFilter, type StatusFilter } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
 import type { Table } from '../types';
@@ -16,7 +16,7 @@ const DEFAULT_FILTERS: LobbyFilters = {
 export function Lobby() {
   const { user } = useAuth();
   const isObserver = isObserverUser(user);
-  const canLoadDirectory = canUseAdminTableDirectory(user);
+  const canLoadDirectory = canUseAdminTableDirectory(user) && canManageControlPlane(user);
   const [tables, setTables] = useState<Table[]>([]);
   const [observerTableId, setObserverTableId] = useState('');
   const [filters, setFilters] = useState<LobbyFilters>(DEFAULT_FILTERS);

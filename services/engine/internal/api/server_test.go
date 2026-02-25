@@ -967,6 +967,87 @@ func TestAuth_SeatTokenForbiddenOnControlRoutes(t *testing.T) {
 	}
 }
 
+func TestAuth_SeatTokenForbiddenOnAllAdminRoutes(t *testing.T) {
+	t.Parallel()
+
+	repo := persistence.NewInMemoryRepository()
+	server := NewServer(repo, nil, nil, ServerConfig{
+		AdminBearerTokens: map[string]struct{}{"admin": {}},
+		SeatBearerTokens:  map[string]domain.SeatNo{"seat1": 1},
+	})
+
+	tests := []struct {
+		name   string
+		method string
+		route  string
+		body   string
+	}{
+		{
+			name:   "create user",
+			method: http.MethodPost,
+			route:  "/users",
+			body:   `{"name":"operator","token":"operator-token"}`,
+		},
+		{
+			name:   "create agent",
+			method: http.MethodPost,
+			route:  "/agents",
+			body:   `{"user_id":"u1","name":"agent-a"}`,
+		},
+		{
+			name:   "create agent version",
+			method: http.MethodPost,
+			route:  "/agents/a1/versions",
+			body:   `{"endpoint_url":"http://agent.local:9001/callback"}`,
+		},
+		{
+			name:   "create table",
+			method: http.MethodPost,
+			route:  "/tables",
+			body:   `{"name":"t1","max_seats":6,"small_blind":50,"big_blind":100}`,
+		},
+		{
+			name:   "table state",
+			method: http.MethodGet,
+			route:  "/tables/t1/state",
+		},
+		{
+			name:   "join table",
+			method: http.MethodPost,
+			route:  "/tables/t1/join",
+			body:   `{"seat_no":1,"agent_id":"a1","agent_version_id":"v1","stack":10000,"status":"active"}`,
+		},
+		{
+			name:   "start table",
+			method: http.MethodPost,
+			route:  "/tables/t1/start",
+			body:   `{"hands_to_run":1}`,
+		},
+		{
+			name:   "stop table",
+			method: http.MethodPost,
+			route:  "/tables/t1/stop",
+		},
+		{
+			name:   "table status",
+			method: http.MethodGet,
+			route:  "/tables/t1/status",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.route, strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer seat1")
+			w := httptest.NewRecorder()
+			server.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected status %d for %s %s, got %d body=%s", http.StatusForbidden, tt.method, tt.route, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestReplay_SeatTokenNonShowdownRedactsOpponents(t *testing.T) {
 	t.Parallel()
 
