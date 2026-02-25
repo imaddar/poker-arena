@@ -1,5 +1,5 @@
 import type { ActionRequest, Card, GameState, Table, User } from '../types';
-import type { ApiClient, HandSummary, LatestReplay, SessionInfo } from './types';
+import type { ApiClient, HandReplay, HandSummary, LatestReplay, SessionInfo } from './types';
 
 const HERO_SEAT = 2;
 const STREET_CARD_COUNT: Record<GameState['street'], number> = {
@@ -275,6 +275,40 @@ class MockApi implements ApiClient {
       }
     }
     return [];
+  }
+
+  async getHandReplay(handId: string): Promise<HandReplay> {
+    await delay(100);
+    for (const state of this.tableState.values()) {
+      if (state.handId !== handId) {
+        continue;
+      }
+      const holeCardsBySeat: Record<number, Card[]> = {};
+      for (const seat of state.seats) {
+        if (!seat?.holeCards || seat.holeCards.length === 0) {
+          continue;
+        }
+        holeCardsBySeat[seat.seat + 1] = [...seat.holeCards];
+      }
+
+      return {
+        handId: state.handId,
+        board: [...state.communityCards],
+        holeCardsBySeat,
+        actions: state.actionLog.map((entry) => ({
+          street: state.street,
+          actingSeat: HERO_SEAT + 1,
+          action: entry,
+          isFallback: false,
+        })),
+      };
+    }
+    return {
+      handId,
+      board: [],
+      holeCardsBySeat: {},
+      actions: [],
+    };
   }
 
   async submitAction(tableId: string, action: ActionRequest): Promise<GameState> {

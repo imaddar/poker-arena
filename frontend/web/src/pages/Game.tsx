@@ -3,17 +3,21 @@ import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { resolveApiRuntimeConfig } from '../api/config';
+import { Card } from '../components/Card';
 import { PokerTable } from '../components/PokerTable';
+import { useAuth } from '../contexts/AuthContext';
 import { clampRaiseAmount } from '../lib/pokerLogic';
 import { formatArchiveTableId } from '../lib/presentation';
 import { loadGameState } from './gameLoader';
-import type { LatestReplay } from '../api/types';
+import type { HandReplay, LatestReplay } from '../api/types';
 import type { ActionType, GameState } from '../types';
 
 export function Game() {
   const { tableId } = useParams<{ tableId: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const isMockMode = resolveApiRuntimeConfig(import.meta.env).useMock;
+  const isAdmin = user?.role === 'admin';
 
   const [state, setState] = useState<GameState | null>(null);
   const [raiseAmount, setRaiseAmount] = useState(0);
@@ -21,6 +25,17 @@ export function Game() {
   const [error, setError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [latestReplay, setLatestReplay] = useState<LatestReplay | null>(null);
+  const [adminReplay, setAdminReplay] = useState<HandReplay | null>(null);
+
+  const loadAdminReplay = async (latest: LatestReplay | null) => {
+    if (!latest?.handId || !isAdmin || isMockMode) {
+      setAdminReplay(null);
+      return;
+    }
+
+    const replay = await api.getHandReplay(latest.handId);
+    setAdminReplay(replay);
+  };
 
   const loadState = async () => {
     if (!tableId) {
@@ -34,7 +49,9 @@ export function Game() {
       const loaded = await loadGameState(api, tableId, isMockMode);
       setState(loaded.state);
       setRaiseAmount(loaded.raiseAmount);
-      setLatestReplay(loaded.latestReplay ?? null);
+      const latest = loaded.latestReplay ?? null;
+      setLatestReplay(latest);
+      await loadAdminReplay(latest);
     } catch (caught) {
       console.error(caught);
       setError('Could not load live schematic.');
@@ -45,7 +62,17 @@ export function Game() {
 
   useEffect(() => {
     void loadState();
-  }, [tableId]);
+  }, [tableId, isAdmin]);
+
+  useEffect(() => {
+    if (isMockMode || !tableId || !isAdmin) {
+      return;
+    }
+    const interval = setInterval(() => {
+      void loadState();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isMockMode, tableId, isAdmin]);
 
   const streetLabel = useMemo(() => state?.street.toUpperCase() ?? '-', [state]);
 
@@ -111,6 +138,54 @@ export function Game() {
           LATEST_HAND: #{latestReplay?.handNo ?? '-'} // ACTIONS: {latestReplay?.totalActions ?? 0} // FALLBACKS:{' '}
           {latestReplay?.fallbackActions ?? 0}
         </p>
+      )}
+      {!isMockMode && isAdmin && adminReplay && (
+        <section className="ledger-box" aria-label="Admin replay inspector">
+          <h3>Admin Replay Inspector</h3>
+          <p className="ledger-note">HAND {adminReplay.handId} // FULL_CARDS_VISIBLE // AUTO_REFRESH_3S</p>
+          <div className="community-board">
+            <strong>BOARD:</strong>{' '}
+            {adminReplay.board.length > 0 ? (
+              adminReplay.board.map((card, index) => <Card key={`board-${index}`} card={card} compact />)
+            ) : (
+              <span>NO_BOARD_CARDS</span>
+            )}
+          </div>
+          <div>
+            <strong>SEAT_CARDS:</strong>
+            {Object.keys(adminReplay.holeCardsBySeat)
+              .map((seat) => Number(seat))
+              .sort((a, b) => a - b)
+              .map((seatNo) => (
+                <div key={`seat-cards-${seatNo}`} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span>S{seatNo}:</span>
+                  {(adminReplay.holeCardsBySeat[seatNo] ?? []).length > 0 ? (
+                    adminReplay.holeCardsBySeat[seatNo].map((card, idx) => (
+                      <Card key={`seat-${seatNo}-card-${idx}`} card={card} compact />
+                    ))
+                  ) : (
+                    <span>NO_CARDS</span>
+                  )}
+                </div>
+              ))}
+          </div>
+          <div>
+            <strong>DECISIONS:</strong>
+            <ol>
+              {adminReplay.actions.map((action, idx) => {
+                const amount = action.amount == null ? '' : ` ${action.amount}`;
+                const fallback = action.isFallback ? ' (fallback)' : '';
+                return (
+                  <li key={`decision-${idx}`}>
+                    {action.street.toUpperCase()} S{action.actingSeat}: {action.action.toUpperCase()}
+                    {amount}
+                    {fallback}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        </section>
       )}
 
       <div className="game-grid">

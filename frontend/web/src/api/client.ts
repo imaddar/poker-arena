@@ -1,5 +1,5 @@
 import type { ActionRequest, GameState, Player, Table, User, UserRole } from '../types';
-import type { ApiClient, HandSummary, LatestReplay, SessionInfo } from './types';
+import type { ApiClient, HandReplay, HandSummary, LatestReplay, ReplayAction, ReplayCard, SessionInfo } from './types';
 
 interface HttpApiClientOptions {
   baseUrl: string;
@@ -57,6 +57,23 @@ interface LatestReplayDTO {
 interface SessionDTO {
   role: 'admin' | 'seat';
   seat_no?: number;
+}
+
+interface ReplayCardDTO {
+  rank: number;
+  suit: 'clubs' | 'diamonds' | 'hearts' | 'spades';
+}
+
+interface HandReplayDTO {
+  hand_id: string;
+  final_state: {
+    board: ReplayCardDTO[];
+    hole_cards: Array<{
+      seat_no: number;
+      cards: ReplayCardDTO[];
+    }>;
+  };
+  actions: ActionDTO[];
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -118,6 +135,45 @@ function mapTableState(dto: TableStateDTO): GameState {
     toCall: 0,
     minRaise: dto.table.big_blind,
     actionLog: [`Loaded table state for ${dto.table.name}`],
+  };
+}
+
+function mapReplayCard(card: ReplayCardDTO): ReplayCard {
+  const rankMap: Record<number, string> = {
+    2: '2',
+    3: '3',
+    4: '4',
+    5: '5',
+    6: '6',
+    7: '7',
+    8: '8',
+    9: '9',
+    10: 'T',
+    11: 'J',
+    12: 'Q',
+    13: 'K',
+    14: 'A',
+  };
+  const suitMap: Record<ReplayCardDTO['suit'], ReplayCard['suit']> = {
+    clubs: 'c',
+    diamonds: 'd',
+    hearts: 'h',
+    spades: 's',
+  };
+
+  return {
+    rank: rankMap[card.rank] ?? String(card.rank),
+    suit: suitMap[card.suit] ?? 'c',
+  };
+}
+
+function mapReplayAction(item: ActionDTO): ReplayAction {
+  return {
+    street: item.street,
+    actingSeat: item.acting_seat,
+    action: item.action,
+    amount: item.amount,
+    isFallback: item.is_fallback,
   };
 }
 
@@ -229,6 +285,21 @@ export function createHttpApiClient(options: HttpApiClientOptions): ApiClient {
         const fallback = item.is_fallback ? ' (fallback)' : '';
         return `${item.street.toUpperCase()} S${item.acting_seat}: ${item.action.toUpperCase()}${amount}${fallback}`;
       });
+    },
+
+    async getHandReplay(handId: string): Promise<HandReplay> {
+      const payload = await request<HandReplayDTO>(`/hands/${handId}/replay`, { method: 'GET' });
+      const holeCardsBySeat: Record<number, ReplayCard[]> = {};
+      for (const entry of payload.final_state.hole_cards ?? []) {
+        holeCardsBySeat[entry.seat_no] = (entry.cards ?? []).map(mapReplayCard);
+      }
+
+      return {
+        handId: payload.hand_id,
+        board: (payload.final_state.board ?? []).map(mapReplayCard),
+        holeCardsBySeat,
+        actions: (payload.actions ?? []).map(mapReplayAction),
+      };
     },
 
     async submitAction(tableId: string, _action: ActionRequest): Promise<GameState> {

@@ -19,6 +19,26 @@ export interface SessionInfo {
   seatNo?: number;
 }
 
+export interface ReplayCard {
+  rank: string;
+  suit: 's' | 'h' | 'd' | 'c';
+}
+
+export interface ReplayAction {
+  street: string;
+  actingSeat: number;
+  action: string;
+  amount?: number;
+  isFallback: boolean;
+}
+
+export interface HandReplay {
+  handId: string;
+  board: ReplayCard[];
+  holeCardsBySeat: Record<number, ReplayCard[]>;
+  actions: ReplayAction[];
+}
+
 export interface ApiClient {
   login(username: string, authToken?: string): Promise<User>;
   getSession(authToken?: string): Promise<SessionInfo>;
@@ -29,5 +49,6 @@ export interface ApiClient {
   getLatestReplay(tableId: string): Promise<LatestReplay>;
   getTableHands(tableId: string): Promise<HandSummary[]>;
   getHandActions(handId: string): Promise<string[]>;
+  getHandReplay(handId: string): Promise<HandReplay>;
   submitAction(tableId: string, action: ActionRequest): Promise<GameState>;
 }
