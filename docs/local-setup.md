@@ -103,7 +103,30 @@ SEAT_TOKEN=local-seat-1-token \
 ./scripts/test-all-local.sh
 ```
 
-## 7) Manual API Spot Checks
+## 7) Play Against Agents From Frontend
+
+Run a single script that sets up two local agents, creates a table, joins admin seat `3`, and starts a long run:
+
+```bash
+BASE_URL=http://127.0.0.1:8081 \
+FRONTEND_URL=http://localhost:5173 \
+ADMIN_TOKEN=local-admin-token \
+./scripts/play-vs-agents-local.sh
+```
+
+Then:
+
+- Open the printed `frontend_game_url`.
+- Log in with `local-admin-token`.
+- Use **Admin Seat Controls** (seat `3`) to submit actions when prompted.
+
+If your frontend runs on `http://localhost:5174`, include both origins when starting control-plane:
+
+```bash
+export CONTROLPLANE_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174
+```
+
+## 8) Manual API Spot Checks
 
 Admin session:
 

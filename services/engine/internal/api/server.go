@@ -846,7 +846,7 @@ func (s *Server) handleJoinAdminTable(w http.ResponseWriter, r *http.Request, ta
 
 	agentID, versionID, err := s.ensureAdminHumanSeatResources(tableID, seatNo)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to prepare admin seat resources")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare admin seat resources: %v", err))
 		return
 	}
 
@@ -868,32 +868,49 @@ func (s *Server) handleJoinAdminTable(w http.ResponseWriter, r *http.Request, ta
 }
 
 func (s *Server) ensureAdminHumanSeatResources(tableID string, seatNo domain.SeatNo) (string, string, error) {
-	userID := "admin-human-user"
-	agentID := fmt.Sprintf("admin-human-agent-%s-%d", tableID, seatNo)
-	versionID := fmt.Sprintf("admin-human-version-%s-%d", tableID, seatNo)
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		// Use unique IDs to avoid uniqueness conflicts across repeated local runs.
+		userID := newID("admin-human-user")
+		agentID := newID("admin-human-agent")
+		versionID := newID("admin-human-version")
+		token := fmt.Sprintf("admin-human-token-%s", userID)
 
-	_ = s.repo.CreateUser(persistence.UserRecord{
-		ID:        userID,
-		Name:      "Admin Human",
-		Token:     "admin-human-token",
-		CreatedAt: time.Now().UTC(),
-	})
-	_ = s.repo.CreateAgent(persistence.AgentRecord{
-		ID:        agentID,
-		UserID:    userID,
-		Name:      fmt.Sprintf("admin-seat-%d", seatNo),
-		CreatedAt: time.Now().UTC(),
-	})
-	if err := s.repo.CreateAgentVersion(persistence.AgentVersionRecord{
-		ID:          versionID,
-		AgentID:     agentID,
-		Version:     1,
-		EndpointURL: fmt.Sprintf("human://admin-seat/%d", seatNo),
-		CreatedAt:   time.Now().UTC(),
-	}); err != nil && !errors.Is(err, persistence.ErrAgentVersionExists) {
-		return "", "", err
+		if err := s.repo.CreateUser(persistence.UserRecord{
+			ID:        userID,
+			Name:      "Admin Human",
+			Token:     token,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			lastErr = fmt.Errorf("create user: %w", err)
+			continue
+		}
+		if err := s.repo.CreateAgent(persistence.AgentRecord{
+			ID:        agentID,
+			UserID:    userID,
+			Name:      fmt.Sprintf("admin-seat-%s-%d", tableID, seatNo),
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			lastErr = fmt.Errorf("create agent: %w", err)
+			continue
+		}
+		if err := s.repo.CreateAgentVersion(persistence.AgentVersionRecord{
+			ID:          versionID,
+			AgentID:     agentID,
+			Version:     1,
+			EndpointURL: fmt.Sprintf("human://admin-seat/%s/%d", tableID, seatNo),
+			ConfigJSON:  json.RawMessage(`{}`),
+			CreatedAt:   time.Now().UTC(),
+		}); err != nil {
+			lastErr = fmt.Errorf("create agent version: %w", err)
+			continue
+		}
+		return agentID, versionID, nil
 	}
-	return agentID, versionID, nil
+	if lastErr == nil {
+		lastErr = errors.New("unknown error")
+	}
+	return "", "", lastErr
 }
 
 func (s *Server) handleTableState(w http.ResponseWriter, tableID string) {
