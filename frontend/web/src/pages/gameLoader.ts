@@ -18,13 +18,14 @@ export async function loadGameState(
   const baseState = await api.getTableState(tableId);
   const latestReplay = isMockMode ? undefined : await api.getLatestReplay(tableId);
   const state = isMockMode || !latestReplay ? baseState : applyObserverReplayToState(baseState, latestReplay);
+  const actingStack = state.seats[state.currentTurnSeat]?.stack ?? 0;
 
   return {
     state,
     raiseAmount: clampRaiseAmount({
-      requested: baseState.minRaise,
-      minRaise: baseState.minRaise,
-      stack: baseState.seats[2]?.stack ?? 0,
+      requested: state.minRaise,
+      minRaise: state.minRaise,
+      stack: actingStack,
     }),
     latestReplay,
   };

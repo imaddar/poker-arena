@@ -21,8 +21,7 @@ function makeState(): GameState {
   };
 }
 
-function makeApi(replay: LatestReplay): ApiClient {
-  const state = makeState();
+function makeApi(replay: LatestReplay, state: GameState = makeState()): ApiClient {
   return {
     async login(_username: string): Promise<User> {
       throw new Error('unused in test');
@@ -84,7 +83,7 @@ describe('loadGameState', () => {
     const loaded = await loadGameState(api, 'table-1', false);
     assert.equal(loaded.state.handId, 'hand-77');
     assert.deepEqual(loaded.state.actionLog, ['RIVER S1: RAISE 400 (fallback)']);
-    assert.equal(loaded.raiseAmount, 200);
+    assert.equal(loaded.raiseAmount, 0);
     assert.equal(loaded.latestReplay?.handNo, 77);
     assert.equal(loaded.latestReplay?.totalActions, 1);
     assert.equal(loaded.latestReplay?.fallbackActions, 1);
@@ -95,5 +94,18 @@ describe('loadGameState', () => {
     const loaded = await loadGameState(api, 'table-1', false);
     assert.equal(loaded.state.handId, 'seed-hand');
     assert.deepEqual(loaded.state.actionLog, ['No hands recorded for this table yet.']);
+  });
+
+  it('seeds raise amount from the current turn seat stack instead of a fixed seat index', async () => {
+    const state: GameState = {
+      ...makeState(),
+      currentTurnSeat: 0,
+      seats: [{ id: 'hero', name: 'You', seat: 0, stack: 900, bet: 0, status: 'active', isDealer: false, isTurn: true }, null, null, null, null, null],
+    };
+    const api = makeApi({ actionLog: [] }, state);
+
+    const loaded = await loadGameState(api, 'table-1', true);
+
+    assert.equal(loaded.raiseAmount, 200);
   });
 });

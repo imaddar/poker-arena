@@ -139,7 +139,7 @@ export function Game() {
       clampRaiseAmount({
         requested: next.minRaise,
         minRaise: next.minRaise,
-        stack: next.seats[2]?.stack ?? 0,
+        stack: next.seats[next.currentTurnSeat]?.stack ?? 0,
       }),
     );
   };
