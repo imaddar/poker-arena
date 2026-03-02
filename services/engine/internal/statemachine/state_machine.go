@@ -71,11 +71,24 @@ func StartNewHand(input StartNewHandInput) (domain.HandState, error) {
 		// If every active seat is all-in after blinds there is no one to act.
 		actingSeat = sbSeat
 	}
+	buttonSeat := input.ButtonSeat
+	if seatIndex(seats, input.ButtonSeat) < 0 {
+		if activeSeats == 2 {
+			// In heads-up, button is always the small blind.
+			buttonSeat = sbSeat
+		} else {
+			prev, prevOK := previousSeat(seats, sbSeat, isActiveSeat)
+			if !prevOK {
+				return domain.HandState{}, ErrNoActiveSeats
+			}
+			buttonSeat = prev
+		}
+	}
 
 	state, err := domain.NewHandState(
 		input.TableID,
 		input.HandNo,
-		input.ButtonSeat,
+		buttonSeat,
 		actingSeat,
 		seats,
 		input.Config,
@@ -361,7 +374,16 @@ func nextSeat(
 		}
 	}
 	if !found {
-		return 0, false
+		// If `from` is not seated, start from the first seat clockwise after it.
+		// We model that as a virtual cursor placed before that successor seat.
+		start = len(ordered) - 1
+		for i, seat := range ordered {
+			if seat.SeatNo > from {
+				start = i - 1
+				break
+			}
+		}
+		includeFrom = false
 	}
 
 	offset := 1
@@ -375,6 +397,39 @@ func nextSeat(
 		}
 	}
 	return 0, false
+}
+
+func previousSeat(seats []domain.SeatState, from domain.SeatNo, filter func(domain.SeatState) bool) (domain.SeatNo, bool) {
+	if len(seats) == 0 {
+		return 0, false
+	}
+	ordered := append([]domain.SeatState(nil), seats...)
+	sortSeats(ordered)
+
+	filtered := make([]domain.SeatNo, 0, len(ordered))
+	for _, seat := range ordered {
+		if filter(seat) {
+			filtered = append(filtered, seat.SeatNo)
+		}
+	}
+	if len(filtered) == 0 {
+		return 0, false
+	}
+	if len(filtered) == 1 {
+		return filtered[0], true
+	}
+
+	idx := -1
+	for i, seatNo := range filtered {
+		if seatNo == from {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return 0, false
+	}
+	return filtered[(idx+len(filtered)-1)%len(filtered)], true
 }
 
 func isActiveSeat(seat domain.SeatState) bool {
